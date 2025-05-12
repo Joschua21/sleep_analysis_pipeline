@@ -14,7 +14,6 @@ from datetime import datetime
 
 try:
     from plotting_utils import *
-    from debugging_functions import *
 except ImportError:
     print("ImportError: could not import plotting_utils or debugging_functions. Ensure they are in the same directory as this script.")
 
@@ -993,7 +992,9 @@ def calculate_angular_velocity(df_dlc, df_midpoints_pca_raw, frame_rate, output_
     
     return df_dlc
 
-def identify_sleep_bouts_and_plot(df_dlc, df_midpoints_pca_raw, frame_rate, output_dir, file_name, save_plots=True):
+def identify_sleep_bouts_and_plot(df_dlc, df_midpoints_pca_raw, frame_rate, output_dir, file_name, 
+                                  speed_threshold=60.0, posture_threshold=60.0, angular_threshold=50.0,
+                                  min_sleep_duration_seconds=10.0, save_plots=True):    
     """
     Identify sleep bouts using three different metrics (speed, body posture change, angular velocity)
     and create comparative visualizations.
@@ -1003,9 +1004,9 @@ def identify_sleep_bouts_and_plot(df_dlc, df_midpoints_pca_raw, frame_rate, outp
     print("\nIdentifying and visualizing sleep bouts using multiple metrics...")
     
     # Define thresholds for sleep detection
-    sleep_speed_threshold_pixels_per_second = 60.0
-    posture_change_threshold_pps = 60.0
-    angular_velocity_threshold_deg_per_s = 50.0
+    sleep_speed_threshold_pixels_per_second = speed_threshold
+    posture_change_threshold_pps = posture_threshold
+    angular_velocity_threshold_deg_per_s = angular_threshold
     
     # Minimum durations for sleep bouts
     min_sleep_duration_seconds = 10
@@ -1817,8 +1818,13 @@ def main(input_dir, params=None):
         
         # 15. Identify sleep bouts across all metrics
         df_dlc, sleep_bouts_dict = identify_sleep_bouts_and_plot(
-            df_dlc, df_midpoints_pca_raw, params['frame_rate'], 
-            output_dir, file_name, save_plots=params['save_plots']
+        df_dlc, df_midpoints_pca_raw, params['frame_rate'], 
+        output_dir, file_name, 
+        speed_threshold=params['sleep_speed_threshold'],
+        posture_threshold=params['posture_change_threshold'],
+        angular_threshold=params['angular_velocity_threshold'],
+        min_sleep_duration_seconds=params['min_sleep_duration_seconds'],
+        save_plots=params['save_plots']
         )
         print("Sleep analysis complete")
         
