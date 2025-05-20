@@ -994,7 +994,7 @@ def calculate_angular_velocity(df_dlc, df_midpoints_pca_raw, frame_rate, output_
 
 def identify_sleep_bouts_and_plot(df_dlc, df_midpoints_pca_raw, frame_rate, output_dir, file_name, 
                                   speed_threshold=60.0, posture_threshold=60.0, angular_threshold=50.0,
-                                  min_sleep_duration_seconds=10.0, save_plots=True):    
+                                  min_sleep_duration_seconds=10.0, save_plots=True):   
     """
     Identify sleep bouts using three different metrics (speed, body posture change, angular velocity)
     and create comparative visualizations.
@@ -1523,6 +1523,58 @@ def identify_sleep_bouts_and_plot(df_dlc, df_midpoints_pca_raw, frame_rate, outp
         
         # Calculate pairwise overlaps
         overlap_results = {}
+
+        if has_speed_bouts and has_posture_bouts and has_angular_bouts:
+            # Find time points where all three methods detect sleep
+            all_three_sleep = (speed_bout_series == 1) & (posture_bout_series == 1) & (angular_bout_series == 1)
+            
+            if all_three_sleep.sum() > 0:
+                # Find contiguous blocks of overlapping sleep
+                overlap_groups = all_three_sleep.ne(all_three_sleep.shift()).cumsum()
+                overlapping_sleep_periods = all_three_sleep[all_three_sleep]
+                
+                # Process these blocks into sleep bouts
+                overlapping_sleep_bouts = []
+                
+                for group_id, group_data in overlapping_sleep_periods.groupby(overlap_groups[all_three_sleep]):
+                    start_time = group_data.index[0]
+                    end_time = group_data.index[-1]
+                    
+                    # Calculate duration in seconds
+                    duration_seconds = end_time - start_time + time_resolution
+                    
+                    # Only include if it meets minimum duration requirement
+                    if duration_seconds >= min_sleep_duration_seconds:
+                        # Convert times to frame numbers
+                        start_frame = int(round(start_time * frame_rate))
+                        end_frame = int(round((end_time + time_resolution) * frame_rate)) - 1  # Inclusive end frame
+                        
+                        overlapping_sleep_bouts.append({
+                            'start_frame': start_frame,
+                            'end_frame': end_frame,
+                            'start_time_s': start_time,
+                            'end_time_s': end_time + time_resolution,
+                            'duration_s': duration_seconds
+                        })
+                
+                # Convert to DataFrame
+                df_overlapping_sleep_bouts = pd.DataFrame(overlapping_sleep_bouts)
+                
+                if not df_overlapping_sleep_bouts.empty:
+                    # Save to CSV
+                    sleep_times_csv = os.path.join(output_dir, 'sleep_times.csv')
+                    df_overlapping_sleep_bouts.to_csv(sleep_times_csv, index=False)
+                    print(f"Saved {len(df_overlapping_sleep_bouts)} overlapping sleep bouts to: {sleep_times_csv}")
+                    
+                    # Also add to the return dictionary
+                    sleep_bouts_dict['overlapping'] = df_overlapping_sleep_bouts
+                else:
+                    print("No overlapping sleep bouts meeting duration requirement found.")
+            else:
+                print("No time points where all three methods detect sleep simultaneously.")
+        else:
+            print("Cannot calculate overlapping sleep bouts: Need all three methods to detect sleep.")
+    
         
         # Function to calculate overlap between two methods
         def calculate_overlap(series1, series2, name1, name2):
