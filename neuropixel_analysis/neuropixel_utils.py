@@ -222,8 +222,6 @@ def map_sleep_bouts_to_neural_data(results, sleep_times_csv, cam_times):
     dict
         Updated results dictionary with sleep bout mapping for each probe
     """
-    import pandas as pd
-    import numpy as np
     
     # Load sleep bout information from CSV
     df_sleep = pd.read_csv(sleep_times_csv)
@@ -396,10 +394,9 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
     # Create a mask for time bins that fall within any sleep period
     sleep_mask = np.zeros(len(all_time_bins), dtype=bool)
     for _, bout in all_sleep_bouts.iterrows():
-        if bout['in_range']:  # Only include sleep bouts within recording range
-            start_idx = bout['start_bin_index']
-            end_idx = bout['end_bin_index']
-            sleep_mask[start_idx:end_idx+1] = True
+        start_idx = bout['start_bin_index']
+        end_idx = bout['end_bin_index']
+        sleep_mask[start_idx:end_idx+1] = True
     
     wake_mask = ~sleep_mask
     
@@ -518,9 +515,8 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
     
     # Highlight sleep periods with semi-transparent overlay (light blue to be visible on black/white)
     for _, bout in all_sleep_bouts.iterrows():
-        if bout['in_range']:
-            axs[0].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                          color='lightblue', alpha=0.3, ec='none')
+        axs[0].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
     
     axs[0].set_title(f'All clusters from all probes, sorted by sleep-wake modulation (n={sorted_counts.shape[0]})')
     axs[0].set_ylabel('Cluster rank\n(sleep-selective → wake-selective)')
@@ -558,9 +554,8 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
     
     # Add light colored vertical spans for sleep periods in the average plot
     for _, bout in all_sleep_bouts.iterrows():
-        if bout['in_range']:
-            axs[1].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                        color='lightblue', alpha=0.3, ec='none')
+        axs[1].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                    color='lightblue', alpha=0.3, ec='none')
 
     # Add grid lines to make it easier to read values
     axs[1].grid(True, alpha=0.2)
@@ -579,9 +574,8 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
     
     # Highlight sleep periods
     for _, bout in all_sleep_bouts.iterrows():
-        if bout['in_range']:
-            axs[2].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                          color='lightblue', alpha=0.3, ec='none')
+        axs[2].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
     
     axs[2].set_title(f'Top {num_top_clusters} Sleep-selective clusters')
     axs[2].set_ylabel('Rank (most sleep-selective first)')
@@ -599,9 +593,8 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
     
     # Highlight sleep periods
     for _, bout in all_sleep_bouts.iterrows():
-        if bout['in_range']:
-            axs[3].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                          color='lightblue', alpha=0.3, ec='none')
+        axs[3].axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
     
     axs[3].set_title(f'Top {num_top_clusters} Wake-selective clusters')
     axs[3].set_xlabel('Time (s)')
@@ -693,10 +686,9 @@ def analyze_cluster_state_distribution(results, output_dir=None, save_plots=Fals
         # Create a mask for time bins that fall within any sleep period
         sleep_mask = np.zeros(len(time_bins), dtype=bool)
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:  # Only include sleep bouts within recording range
-                start_idx = bout['start_bin_index']
-                end_idx = bout['end_bin_index']
-                sleep_mask[start_idx:end_idx+1] = True
+            start_idx = bout['start_bin_index']
+            end_idx = bout['end_bin_index']
+            sleep_mask[start_idx:end_idx+1] = True
         
         wake_mask = ~sleep_mask
         
@@ -907,11 +899,10 @@ def analyze_neuronal_stability(results, output_dir=None, save_plots=False, bin_s
         # Create a mask for time bins that fall within any sleep period
         sleep_mask = np.zeros(len(time_bins), dtype=bool)
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:  # Only include sleep bouts within recording range
-                start_idx = bout['start_bin_index']
-                end_idx = bout['end_bin_index']
-                sleep_mask[start_idx:end_idx+1] = True
-        
+            start_idx = bout['start_bin_index']
+            end_idx = bout['end_bin_index']
+            sleep_mask[start_idx:end_idx+1] = True
+    
         wake_mask = ~sleep_mask
         
         # Calculate how many original bins fit into our new larger bins
@@ -1296,10 +1287,9 @@ def analyze_power_spectrum(results, output_dir=None, save_plots=False,
         # Create a mask for time bins that fall within any sleep period
         sleep_mask = np.zeros(len(time_bins), dtype=bool)
         for _, bout in sleep_bout_mapping.iterrows():
-            if bout['in_range']:  # Only include sleep bouts within recording range
-                start_idx = bout['start_bin_index']
-                end_idx = bout['end_bin_index']
-                sleep_mask[start_idx:end_idx+1] = True
+            start_idx = bout['start_bin_index']
+            end_idx = bout['end_bin_index']
+            sleep_mask[start_idx:end_idx+1] = True
     
     # Collect data from all probes
     all_counts = []
@@ -1392,15 +1382,13 @@ def analyze_power_spectrum(results, output_dir=None, save_plots=False,
         # Add sleep bout outlines if available
         if sleep_mask is not None:
             for _, bout in sleep_bout_mapping.iterrows():
-                if bout['in_range']:
-                    # Only include if the time is within our truncated range
-                    if bout['start_bin_time'] <= time_bins[-1] and bout['end_bin_time'] >= time_bins[0]:
-                        # Clip to our time range
-                        start_time = max(bout['start_bin_time'], time_bins[0])
-                        end_time = min(bout['end_bin_time'], time_bins[-1])
-                        # Draw vertical lines at bout boundaries
-                        axs[0].axvline(x=start_time, color='white', linestyle='--', alpha=0.7)
-                        axs[0].axvline(x=end_time, color='white', linestyle='--', alpha=0.7)
+                if bout['start_bin_time'] <= time_bins[-1] and bout['end_bin_time'] >= time_bins[0]:
+                    # Clip to our time range
+                    start_time = max(bout['start_bin_time'], time_bins[0])
+                    end_time = min(bout['end_bin_time'], time_bins[-1])
+                    # Draw vertical lines at bout boundaries
+                    axs[0].axvline(x=start_time, color='white', linestyle='--', alpha=0.7)
+                    axs[0].axvline(x=end_time, color='white', linestyle='--', alpha=0.7)
         
         # Add horizontal lines for frequency bands (only delta and theta)
         axs[0].axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
@@ -1453,15 +1441,13 @@ def analyze_power_spectrum(results, output_dir=None, save_plots=False,
         # Add sleep bout highlights if available
         if sleep_mask is not None:
             for _, bout in sleep_bout_mapping.iterrows():
-                if bout['in_range']:
-                    # Only include if the time is within our truncated range
-                    if bout['start_bin_time'] <= time_bins[-1] and bout['end_bin_time'] >= time_bins[0]:
-                        # Clip to our time range
-                        start_time = max(bout['start_bin_time'], time_bins[0])
-                        end_time = min(bout['end_bin_time'], time_bins[-1])
-                        # Add the span
-                        axs[1].axvspan(start_time, end_time, 
-                                     color='lightblue', alpha=0.3, ec='none')
+                if bout['start_bin_time'] <= time_bins[-1] and bout['end_bin_time'] >= time_bins[0]:
+                    # Clip to our time range
+                    start_time = max(bout['start_bin_time'], time_bins[0])
+                    end_time = min(bout['end_bin_time'], time_bins[-1])
+                    # Add the span
+                    axs[1].axvspan(start_time, end_time, 
+                                    color='lightblue', alpha=0.3, ec='none')
         
         axs[1].set_xlim(time_bins[0], time_bins[-1])
         axs[1].set_title('Power in Frequency Bands Over Time')
@@ -1595,11 +1581,10 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
     # Create a mask for time bins that fall within any sleep period
     sleep_mask = np.zeros(len(time_bins), dtype=bool)
     for _, bout in sleep_bouts.iterrows():
-        if bout['in_range']:  # Only include sleep bouts within recording range
-            start_idx = bout['start_bin_index']
-            end_idx = bout['end_bin_index']
-            sleep_mask[start_idx:end_idx+1] = True
-    
+        start_idx = bout['start_bin_index']
+        end_idx = bout['end_bin_index']
+        sleep_mask[start_idx:end_idx+1] = True
+
     # Time extent for all plots
     time_extent = [time_bins[0], time_bins[-1]]
     
@@ -1654,9 +1639,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add light colored vertical spans for sleep periods
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:
-                ax_behav.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                               color='lightblue', alpha=0.3, ec='none')
+            ax_behav.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                            color='lightblue', alpha=0.3, ec='none')
         
         ax_behav.set_title('Motion Activity (Pixel Difference)')
         ax_behav.set_ylabel('Smoothed\nDifference')
@@ -1793,9 +1777,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add light colored vertical spans for sleep periods
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:
-                ax2.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                          color='lightblue', alpha=0.3, ec='none')
+            ax2.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
 
         ax2.grid(True, alpha=0.2)
         ax2.set_title('Average activity across all filtered clusters')
@@ -1850,9 +1833,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add sleep bout outlines as vertical lines
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:
-                ax3.axvline(x=bout['start_bin_time'], color='white', linestyle='--', alpha=0.7)
-                ax3.axvline(x=bout['end_bin_time'], color='white', linestyle='--', alpha=0.7)
+            ax3.axvline(x=bout['start_bin_time'], color='white', linestyle='--', alpha=0.7)
+            ax3.axvline(x=bout['end_bin_time'], color='white', linestyle='--', alpha=0.7)
         
         # Add horizontal lines for frequency bands
         ax3.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
@@ -1918,9 +1900,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add sleep bout highlights
         for _, bout in sleep_bouts.iterrows():
-            if bout['in_range']:
-                ax4.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                          color='lightblue', alpha=0.3, ec='none')
+            ax4.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
         
         title_suffix = " (Smoothed)" if smoothed_available else ""
         ax4.set_title(f'Power in Frequency Bands Over Time{title_suffix}')
@@ -2446,8 +2427,8 @@ def save_sleep_periods_to_csv(smoothed_results, output_dir, used_filter='SG', fr
             data.append({
                 'start_frame': start_frame,
                 'end_frame': end_frame,
-                'start_time_s': start_time,
-                'end_time_s': end_time,
+                'start_timestamp_s': start_time,
+                'end_timestamp_s': end_time,
                 'duration_s': duration_s,
                 'filter': filter_name
             })

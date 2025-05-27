@@ -205,20 +205,27 @@ def calculate_pixel_differences(input_dir, filename=None, smooth_window=15, blac
     
     print(f"Found {len(valid_regions)} continuous valid segments for smoothing")
     
-    # Apply smoothing to each valid segment independently
+     # Apply smoothing to each valid segment independently
     for start, end in valid_regions:
         segment_len = end - start
         
         # Only smooth if the segment is long enough
         if segment_len >= smooth_window:
             segment_data = differences_filtered[start:end]
-            kernel = np.ones(smooth_window) / smooth_window
+            
+            # Calculate average of all valid values for padding
+            avg_motion = np.nanmean(segment_data)
+            
+            # Create padded segment with the average value at edges
+            padded_segment = np.full(segment_len + 2*(smooth_window//2), avg_motion)
+            padded_segment[smooth_window//2:smooth_window//2+segment_len] = segment_data
             
             # Apply convolution for smoothing
-            smoothed_segment = np.convolve(segment_data, kernel, mode='same')
+            kernel = np.ones(smooth_window) / smooth_window
+            smoothed_padded = np.convolve(padded_segment, kernel, mode='valid')
             
-            # Store the smoothed data
-            smoothed_diffs[start:end] = smoothed_segment
+            # Store the smoothed data (should be same length as original segment)
+            smoothed_diffs[start:end] = smoothed_padded
     
     # Calculate the derivative (only where we have valid data)
     derivative = np.zeros(len(smoothed_diffs) - 1)
