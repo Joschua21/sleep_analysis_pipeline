@@ -1,0 +1,21 @@
+# filepath: c:\Users\Experiment\GitHub\video_analysis_pipeline\.gitignore
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE specific files
+.vscode/
+.idea/
+
+# Large data/video files (add specific patterns if needed)
+*.mp4
+*.avi
+*.csv
+*.png
