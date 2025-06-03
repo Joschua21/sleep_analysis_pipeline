@@ -3,16 +3,61 @@ from scipy.signal.windows import gaussian
 from scipy.signal import convolve, savgol_filter
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.lines import Line2D
 from pinkrigs_tools.dataset.query import load_data, queryCSV
 import os
 from datetime import datetime
 import seaborn as sns
 import pandas as pd
 from scipy import stats, signal
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import time
 from glob import glob
 from scipy.ndimage import gaussian_filter1d
 
+def moving_average_with_padding(data, window_size, session_average=None):
+
+    if session_average is None:
+        session_average = np.mean(data)
+    
+    # Calculate half window size
+    half_window = window_size // 2
+    
+    # Create padded array
+    padded_data = np.concatenate([
+        np.full(half_window, session_average),  # Pad start with session average
+        data,
+        np.full(half_window, session_average)   # Pad end with session average
+    ])
+    
+    # Apply moving average
+    kernel = np.ones(window_size) / window_size
+    smoothed_padded = np.convolve(padded_data, kernel, mode='valid')
+    
+    # Ensure we return exactly the same length as input
+    expected_length = len(data)
+    actual_length = len(smoothed_padded)
+    
+    if actual_length != expected_length:
+        # Trim or pad to match exact input length
+        if actual_length > expected_length:
+            # Trim from both ends equally
+            excess = actual_length - expected_length
+            start_trim = excess // 2
+            end_trim = excess - start_trim
+            if end_trim > 0:
+                smoothed_padded = smoothed_padded[start_trim:-end_trim]
+            else:
+                smoothed_padded = smoothed_padded[start_trim:]
+        else:
+            # This shouldn't happen with our padding, but just in case
+            smoothed_padded = np.pad(smoothed_padded, 
+                                   (0, expected_length - actual_length), 
+                                   'edge')
+    
+    return smoothed_padded
 
 def process_spike_data(exp_kwargs, bin_size=0.3, show_plots=True):
     """
@@ -640,6 +685,7 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, num_
 def analyze_cluster_state_distribution(results, output_dir=None, save_plots=False, bin_size_s=120, state_threshold=0.9):
     """
     Analyze the distribution of cluster firing rates during predominantly sleep or wake states
+    using pooled and normalized data from all probes
     
     Parameters:
     -----------
@@ -657,198 +703,238 @@ def analyze_cluster_state_distribution(results, output_dir=None, save_plots=Fals
     Returns:
     --------
     dict
-        Dictionary containing state-dependent firing rates for each probe
+        Dictionary containing state-dependent firing rates for merged probes
     """
     if state_threshold > 1:
         state_threshold = state_threshold / 100
 
-    state_results = {}
-    
+    # Check which probes have the required data
+    valid_probes = []
     for probe in results:
         if 'sleep_bout_mapping' not in results[probe]:
             print(f"No sleep bout mapping found for {probe}. Skipping.")
             continue
-            
         if 'cluster_quality' not in results[probe]:
             print(f"No quality labels found for {probe}. Skipping.")
             continue
-        
+        valid_probes.append(probe)
+    
+    if not valid_probes:
+        print("No valid probes found with required data.")
+        return {}
+    
+    # Use the first probe's time bins and sleep bout info as reference
+    reference_probe = valid_probes[0]
+    time_bins = results[reference_probe]['time_bins']
+    sleep_bouts = results[reference_probe]['sleep_bout_mapping']
+    original_bin_size = time_bins[1] - time_bins[0]
+    
+    # Create a mask for time bins that fall within any sleep period
+    sleep_mask = np.zeros(len(time_bins), dtype=bool)
+    for _, bout in sleep_bouts.iterrows():
+        start_idx = bout['start_bin_index']
+        end_idx = bout['end_bin_index']
+        sleep_mask[start_idx:end_idx+1] = True
+
+    wake_mask = ~sleep_mask
+    
+    # Collect and merge data from all probes
+    all_counts = []
+    all_cluster_ids = []
+    all_min_length = float('inf')
+    
+    # First pass: determine minimum length and collect data
+    for probe in valid_probes:
         # Filter out noise clusters, keep good and mua
         counts, cluster_ids, quality_mask = filter_clusters_by_quality(
             results, probe, include_qualities=['good', 'mua']
         )
         
-        # Get time bins and sleep bout information
-        time_bins = results[probe]['time_bins']
-        sleep_bouts = results[probe]['sleep_bout_mapping']
-        original_bin_size = time_bins[1] - time_bins[0]
+        if counts.shape[0] > 0:
+            all_min_length = min(all_min_length, counts.shape[1])
+            all_counts.append(counts)
+            all_cluster_ids.extend([(probe, cid) for cid in cluster_ids])
+    
+    if not all_counts:
+        print("No valid clusters found after filtering.")
+        return {}
+    
+    # Second pass: truncate all arrays to minimum length
+    for i in range(len(all_counts)):
+        all_counts[i] = all_counts[i][:, :all_min_length]
+    
+    # Merge counts from all probes
+    merged_counts = np.vstack(all_counts)
+    
+    # Adjust time_bins and sleep_mask to match truncated data
+    time_bins = time_bins[:all_min_length]
+    sleep_mask = sleep_mask[:all_min_length]
+    wake_mask = ~sleep_mask
+    
+    # Normalize each cluster's firing rate by its 95th percentile (same as analyze_sleep_wake_activity)
+    normalized_counts = np.zeros_like(merged_counts, dtype=float)
+    for i in range(merged_counts.shape[0]):
+        cluster_counts = merged_counts[i, :]
+        p95 = np.percentile(cluster_counts, 95)
         
-        # Create a mask for time bins that fall within any sleep period
-        sleep_mask = np.zeros(len(time_bins), dtype=bool)
-        for _, bout in sleep_bouts.iterrows():
-            start_idx = bout['start_bin_index']
-            end_idx = bout['end_bin_index']
-            sleep_mask[start_idx:end_idx+1] = True
+        # Avoid division by zero
+        if p95 > 0:
+            normalized_counts[i, :] = cluster_counts / p95
+        else:
+            normalized_counts[i, :] = cluster_counts
+    
+    # Calculate how many original bins fit into our new larger bins
+    bins_per_large_bin = int(bin_size_s / original_bin_size)
+    num_large_bins = len(time_bins) // bins_per_large_bin
+    
+    if num_large_bins == 0:
+        print(f"Warning: Recording too short for {bin_size_s}s bins. Try a smaller bin size.")
+        return {}
+    
+    # Initialize arrays to store state and firing rates for each large bin
+    large_bin_states = []
+    large_bin_firing_rates = np.zeros((normalized_counts.shape[0], num_large_bins))
+    large_bin_centers = np.zeros(num_large_bins)
+    
+    # Process each large bin
+    for i in range(num_large_bins):
+        start_idx = i * bins_per_large_bin
+        end_idx = min((i + 1) * bins_per_large_bin, len(time_bins))
         
-        wake_mask = ~sleep_mask
+        # Calculate bin center time
+        large_bin_centers[i] = np.mean(time_bins[start_idx:end_idx])
         
-        # Calculate how many original bins fit into our new larger bins
-        bins_per_large_bin = int(bin_size_s / original_bin_size)
-        num_large_bins = len(time_bins) // bins_per_large_bin
+        # Calculate state for this bin
+        sleep_fraction = np.sum(sleep_mask[start_idx:end_idx]) / (end_idx - start_idx)
         
-        if num_large_bins == 0:
-            print(f"Warning: Recording too short for {bin_size_s}s bins. Try a smaller bin size.")
-            continue
+        if sleep_fraction >= state_threshold:
+            large_bin_states.append('Sleep')
+        elif sleep_fraction <= (1 - state_threshold):
+            large_bin_states.append('Wake')
+        else:
+            large_bin_states.append('Mixed')
         
-        # Initialize arrays to store state and firing rates for each large bin
-        large_bin_states = []
-        large_bin_firing_rates = np.zeros((counts.shape[0], num_large_bins))
-        large_bin_centers = np.zeros(num_large_bins)
+        # Calculate normalized firing rate for each cluster in this bin
+        for j in range(normalized_counts.shape[0]):
+            # Use normalized counts instead of raw counts
+            normalized_activity_in_bin = np.mean(normalized_counts[j, start_idx:end_idx])
+            large_bin_firing_rates[j, i] = normalized_activity_in_bin
+    
+    # Collect data for plotting
+    plot_data = []
+    for i, cluster_id in enumerate(all_cluster_ids):
+        sleep_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Sleep']]
+        wake_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Wake']]
         
-        # Process each large bin
-        for i in range(num_large_bins):
-            start_idx = i * bins_per_large_bin
-            end_idx = min((i + 1) * bins_per_large_bin, len(time_bins))
+        # Calculate average normalized firing rate across bins for each state
+        if len(sleep_rates) > 0:
+            sleep_avg_rate = np.mean(sleep_rates)
+            plot_data.append({
+                'cluster_id': cluster_id,
+                'state': 'Sleep',
+                'firing_rate': sleep_avg_rate
+            })
             
-            # Calculate bin center time
-            large_bin_centers[i] = np.mean(time_bins[start_idx:end_idx])
-            
-            # Calculate state for this bin
-            sleep_fraction = np.sum(sleep_mask[start_idx:end_idx]) / (end_idx - start_idx)
-            
-            if sleep_fraction >= state_threshold:
-                large_bin_states.append('Sleep')  # Note: using 'Sleep' instead of 'sleep'
-            elif sleep_fraction <= (1 - state_threshold):
-                large_bin_states.append('Wake')   # Note: using 'Wake' instead of 'wake'
-            else:
-                large_bin_states.append('Mixed')  # Note: using 'Mixed' instead of 'mixed'
-            
-            # Calculate firing rate for each cluster in this bin
-            for j in range(counts.shape[0]):
-                spikes_in_bin = np.sum(counts[j, start_idx:end_idx])
-                large_bin_firing_rates[j, i] = spikes_in_bin / bin_size_s  # Convert to Hz
-        
-        # Collect data for plotting
-        plot_data = []
-        for i, cluster_id in enumerate(cluster_ids):
-            sleep_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Sleep']]
-            wake_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Wake']]
-            
-            # Calculate average firing rate across bins for each state
-            if len(sleep_rates) > 0:
-                sleep_avg_rate = np.mean(sleep_rates)
-                plot_data.append({
-                    'cluster_id': cluster_id,
-                    'state': 'Sleep',
-                    'firing_rate': sleep_avg_rate
-                })
-                
-            if len(wake_rates) > 0:
-                wake_avg_rate = np.mean(wake_rates)
-                plot_data.append({
-                    'cluster_id': cluster_id,
-                    'state': 'Wake',
-                    'firing_rate': wake_avg_rate
-                })
-        
-        # Convert to DataFrame for seaborn
-        df_plot = pd.DataFrame(plot_data)
-        
-        # Check if DataFrame is empty
-        if df_plot.empty:
-            print(f"No data to plot for {probe}. Try adjusting the bin size or threshold.")
-            continue
-            
-        # Check if the expected columns exist
-        if 'state' not in df_plot.columns or 'firing_rate' not in df_plot.columns:
-            print(f"Error: Required columns missing in DataFrame for {probe}.")
-            print(f"Available columns: {df_plot.columns.tolist()}")
-            continue
-        
-        # Store results
-        state_results[probe] = {
-            'cluster_ids': cluster_ids,
+        if len(wake_rates) > 0:
+            wake_avg_rate = np.mean(wake_rates)
+            plot_data.append({
+                'cluster_id': cluster_id,
+                'state': 'Wake',
+                'firing_rate': wake_avg_rate
+            })
+    
+    # Convert to DataFrame for seaborn
+    df_plot = pd.DataFrame(plot_data)
+    
+    # Check if DataFrame is empty
+    if df_plot.empty:
+        print("No data to plot. Try adjusting the bin size or threshold.")
+        return {}
+    
+    # Store results
+    state_results = {
+        'merged': {
+            'cluster_ids': all_cluster_ids,
             'large_bin_states': large_bin_states,
             'large_bin_firing_rates': large_bin_firing_rates,
             'large_bin_centers': large_bin_centers,
             'plot_data': df_plot
         }
+    }
+    
+    # Create figure for swarm plot
+    plt.figure(figsize=(10, 8))
+    
+    # Debug: print first few rows of DataFrame
+    print(f"\nFirst few rows of DataFrame for merged probes:")
+    print(df_plot.head())
+    
+    # Create swarm plot
+    ax = sns.swarmplot(data=df_plot, x='state', y='firing_rate', color='gray', alpha=0.7, size=5)
+    
+    # Add box plot over swarm plot to show distribution
+    sns.boxplot(data=df_plot, x='state', y='firing_rate', color='white', fliersize=0, width=0.5, 
+               boxprops={"facecolor": (.9, .9, .9, 0.5), "edgecolor": "black"})
+    
+    # Perform statistical test
+    sleep_rates = df_plot[df_plot['state'] == 'Sleep']['firing_rate'].values
+    wake_rates = df_plot[df_plot['state'] == 'Wake']['firing_rate'].values
+    
+    if len(sleep_rates) > 0 and len(wake_rates) > 0:
+        stat, p_value = stats.mannwhitneyu(sleep_rates, wake_rates)
         
-        # Create figure for swarm plot
-        plt.figure(figsize=(10, 8))
+        # Add statistics to plot
+        plt.title(f'Merged Probes: Normalized Cluster Firing Rates by State (p={p_value:.4f})')
         
-        # Debug: print first few rows of DataFrame
-        print(f"\nFirst few rows of DataFrame for {probe}:")
-        print(df_plot.head())
+        # Add number of observations
+        plt.annotate(f'n={len(sleep_rates)} observations\n{len(np.unique(df_plot[df_plot["state"] == "Sleep"]["cluster_id"]))} clusters', 
+                    xy=(0, 0), xytext=(0.1, 0.95), textcoords='figure fraction',
+                    horizontalalignment='left', verticalalignment='top')
         
-        # Create swarm plot
-        ax = sns.swarmplot(data=df_plot, x='state', y='firing_rate', color='gray', alpha=0.7, size=5)
-        
-        # Add box plot over swarm plot to show distribution
-        sns.boxplot(data=df_plot, x='state', y='firing_rate', color='white', fliersize=0, width=0.5, boxprops={"facecolor": (.9, .9, .9, 0.5), "edgecolor": "black"})
-        
-        # Perform statistical test
-        sleep_rates = df_plot[df_plot['state'] == 'Sleep']['firing_rate'].values
-        wake_rates = df_plot[df_plot['state'] == 'Wake']['firing_rate'].values
-        
-        if len(sleep_rates) > 0 and len(wake_rates) > 0:
-            stat, p_value = stats.mannwhitneyu(sleep_rates, wake_rates)
-            
-            # Add statistics to plot
-            plt.title(f'{probe}: Cluster Firing Rates by State (p={p_value:.4f})')
-            
-            # Add number of observations
-            plt.annotate(f'n={len(sleep_rates)} observations\n{len(np.unique(df_plot[df_plot["state"] == "Sleep"]["cluster_id"]))} clusters', 
-                        xy=(0, 0), xytext=(0.1, 0.95), textcoords='figure fraction',
-                        horizontalalignment='left', verticalalignment='top')
-            
-            plt.annotate(f'n={len(wake_rates)} observations\n{len(np.unique(df_plot[df_plot["state"] == "Wake"]["cluster_id"]))} clusters', 
-                        xy=(0, 0), xytext=(0.9, 0.95), textcoords='figure fraction',
-                        horizontalalignment='right', verticalalignment='top')
-        else:
-            plt.title(f'{probe}: Cluster Firing Rates by State')
-        
-        # Set axis labels
-        plt.xlabel('State')
-        plt.ylabel('Firing Rate (Hz)')
-        
-        # Apply gridlines
-        plt.grid(True, axis='y', alpha=0.3)
-        
-        # Save plot if requested
-        if save_plots and output_dir:
-            # Create output directory if it doesn't exist
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{probe}_state_firing_rates_{timestamp}.png"
-            filepath = os.path.join(output_dir, filename)
-            
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            print(f"Saved plot to: {filepath}")
-        
-        # Display summary statistics
-        print(f"\nResults for {probe} using {bin_size_s}s bins and {state_threshold*100}% state threshold:")
-        print(f"Total large bins: {num_large_bins}")
-        print(f"Sleep bins: {large_bin_states.count('Sleep')}")
-        print(f"Wake bins: {large_bin_states.count('Wake')}")
-        print(f"Mixed bins: {large_bin_states.count('Mixed')}")
-        
-        if len(sleep_rates) > 0 and len(wake_rates) > 0:
-            print("\nFiring rate statistics:")
-            print(f"Sleep: median={np.median(sleep_rates):.4f} Hz, mean={np.mean(sleep_rates):.4f} Hz")
-            print(f"Wake: median={np.median(wake_rates):.4f} Hz, mean={np.mean(wake_rates):.4f} Hz")
-            print(f"Mann-Whitney U test: p={p_value:.4f}")
-        
-        plt.show()
+        plt.annotate(f'n={len(wake_rates)} observations\n{len(np.unique(df_plot[df_plot["state"] == "Wake"]["cluster_id"]))} clusters', 
+                    xy=(0, 0), xytext=(0.9, 0.95), textcoords='figure fraction',
+                    horizontalalignment='right', verticalalignment='top')
+    else:
+        plt.title('Merged Probes: Normalized Cluster Firing Rates by State')
+    
+    # Set axis labels
+    plt.xlabel('State')
+    plt.ylabel('Normalized Firing Rate')
+    
+    # Apply gridlines
+    plt.grid(True, axis='y', alpha=0.3)
+    
+    # Save plot if requested
+    if save_plots and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"merged_probes_state_firing_rates_{timestamp}.png"
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"Saved plot to: {filepath}")
+    
+    # Display summary statistics
+    print(f"\nResults for merged probes using {bin_size_s}s bins and {state_threshold*100}% state threshold:")
+    print(f"Total large bins: {num_large_bins}")
+    print(f"Sleep bins: {large_bin_states.count('Sleep')}")
+    print(f"Wake bins: {large_bin_states.count('Wake')}")
+    print(f"Mixed bins: {large_bin_states.count('Mixed')}")
+    print(f"Total clusters analyzed: {len(all_cluster_ids)}")
+    
+    if len(sleep_rates) > 0 and len(wake_rates) > 0:
+        print("\nNormalized firing rate statistics:")
+        print(f"Sleep: median={np.median(sleep_rates):.4f}, mean={np.mean(sleep_rates):.4f}")
+        print(f"Wake: median={np.median(wake_rates):.4f}, mean={np.mean(wake_rates):.4f}")
+        print(f"Mann-Whitney U test: p={p_value:.4f}")
+    
+    plt.show()
     
     return state_results
 
-
 def analyze_neuronal_stability(results, output_dir=None, save_plots=False, bin_size_s=120, state_threshold=0.9, max_iterations=1000):
     """
-    Analyze neuronal stability by splitting bins into two categories and comparing firing rates
+    Analyze neuronal stability by splitting bins into two categories and comparing normalized firing rates
+    using pooled data from all probes
     
     Parameters:
     -----------
@@ -868,224 +954,263 @@ def analyze_neuronal_stability(results, output_dir=None, save_plots=False, bin_s
     Returns:
     --------
     dict
-        Dictionary containing stability metrics for each probe
+        Dictionary containing stability metrics for merged probes
     """
     
     # Convert threshold from percentage to fraction if needed
     if state_threshold > 1:
         state_threshold = state_threshold / 100
     
-    stability_results = {}
-    
+    # Check which probes have the required data
+    valid_probes = []
     for probe in results:
         if 'sleep_bout_mapping' not in results[probe]:
             print(f"No sleep bout mapping found for {probe}. Skipping.")
             continue
-            
         if 'cluster_quality' not in results[probe]:
             print(f"No quality labels found for {probe}. Skipping.")
             continue
-        
+        valid_probes.append(probe)
+    
+    if not valid_probes:
+        print("No valid probes found with required data.")
+        return {}
+    
+    # Use the first probe's time bins and sleep bout info as reference
+    reference_probe = valid_probes[0]
+    time_bins = results[reference_probe]['time_bins']
+    sleep_bouts = results[reference_probe]['sleep_bout_mapping']
+    original_bin_size = time_bins[1] - time_bins[0]
+    
+    # Create a mask for time bins that fall within any sleep period
+    sleep_mask = np.zeros(len(time_bins), dtype=bool)
+    for _, bout in sleep_bouts.iterrows():
+        start_idx = bout['start_bin_index']
+        end_idx = bout['end_bin_index']
+        sleep_mask[start_idx:end_idx+1] = True
+
+    wake_mask = ~sleep_mask
+    
+    # Collect and merge data from all probes
+    all_counts = []
+    all_cluster_ids = []
+    all_min_length = float('inf')
+    
+    # First pass: determine minimum length and collect data
+    for probe in valid_probes:
         # Filter out noise clusters, keep good and mua
         counts, cluster_ids, quality_mask = filter_clusters_by_quality(
             results, probe, include_qualities=['good', 'mua']
         )
         
-        # Get time bins and sleep bout information
-        time_bins = results[probe]['time_bins']
-        sleep_bouts = results[probe]['sleep_bout_mapping']
-        original_bin_size = time_bins[1] - time_bins[0]
-        
-        # Create a mask for time bins that fall within any sleep period
-        sleep_mask = np.zeros(len(time_bins), dtype=bool)
-        for _, bout in sleep_bouts.iterrows():
-            start_idx = bout['start_bin_index']
-            end_idx = bout['end_bin_index']
-            sleep_mask[start_idx:end_idx+1] = True
+        if counts.shape[0] > 0:
+            all_min_length = min(all_min_length, counts.shape[1])
+            all_counts.append(counts)
+            all_cluster_ids.extend([(probe, cid) for cid in cluster_ids])
     
-        wake_mask = ~sleep_mask
+    if not all_counts:
+        print("No valid clusters found after filtering.")
+        return {}
+    
+    # Second pass: truncate all arrays to minimum length
+    for i in range(len(all_counts)):
+        all_counts[i] = all_counts[i][:, :all_min_length]
+    
+    # Merge counts from all probes
+    merged_counts = np.vstack(all_counts)
+    
+    # Adjust time_bins and sleep_mask to match truncated data
+    time_bins = time_bins[:all_min_length]
+    sleep_mask = sleep_mask[:all_min_length]
+    wake_mask = ~sleep_mask
+    
+    # Normalize each cluster's firing rate by its 95th percentile (same as analyze_sleep_wake_activity)
+    normalized_counts = np.zeros_like(merged_counts, dtype=float)
+    for i in range(merged_counts.shape[0]):
+        cluster_counts = merged_counts[i, :]
+        p95 = np.percentile(cluster_counts, 95)
         
-        # Calculate how many original bins fit into our new larger bins
-        bins_per_large_bin = int(bin_size_s / original_bin_size)
-        num_large_bins = len(time_bins) // bins_per_large_bin
-        
-        if num_large_bins == 0:
-            print(f"Warning: Recording too short for {bin_size_s}s bins. Try a smaller bin size.")
-            continue
-        
-        # Initialize arrays to store state and firing rates for each large bin
-        large_bin_states = []
-        large_bin_times = []  # Store bin center times
-        large_bin_firing_rates = np.zeros((counts.shape[0], num_large_bins))
-        
-        # Process each large bin
-        for i in range(num_large_bins):
-            start_idx = i * bins_per_large_bin
-            end_idx = min((i + 1) * bins_per_large_bin, len(time_bins))
-            
-            # Calculate bin center time
-            bin_center = np.mean(time_bins[start_idx:end_idx])
-            large_bin_times.append(bin_center)
-            
-            # Calculate state for this bin
-            sleep_fraction = np.sum(sleep_mask[start_idx:end_idx]) / (end_idx - start_idx)
-            
-            if sleep_fraction >= state_threshold:
-                large_bin_states.append('Sleep')
-            elif sleep_fraction <= (1 - state_threshold):
-                large_bin_states.append('Wake')
-            else:
-                large_bin_states.append('Mixed')
-            
-            # Calculate firing rate for each cluster in this bin
-            for j in range(counts.shape[0]):
-                spikes_in_bin = np.sum(counts[j, start_idx:end_idx])
-                large_bin_firing_rates[j, i] = spikes_in_bin / bin_size_s  # Convert to Hz
-        
-        # Convert to arrays for easier manipulation
-        large_bin_times = np.array(large_bin_times)
-        large_bin_states = np.array(large_bin_states)
-        
-        # Identify recording midpoint
-        midpoint_time = (time_bins[0] + time_bins[-1]) / 2
-        
-        # Create bin groups
-        first_half_sleep_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Sleep'))[0]
-        first_half_wake_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Wake'))[0]
-        second_half_sleep_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Sleep'))[0]
-        second_half_wake_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Wake'))[0]
-        
-        # Print bin distribution
-        print(f"\nBin distribution for {probe}:")
-        print(f"First half sleep bins: {len(first_half_sleep_bins)}")
-        print(f"First half wake bins: {len(first_half_wake_bins)}")
-        print(f"Second half sleep bins: {len(second_half_sleep_bins)}")
-        print(f"Second half wake bins: {len(second_half_wake_bins)}")
-        
-        # Check if we have enough bins for analysis
-        total_usable_bins = len(first_half_sleep_bins) + len(first_half_wake_bins) + len(second_half_sleep_bins) + len(second_half_wake_bins)
-        if total_usable_bins < 4:
-            print(f"Not enough usable bins for {probe} to perform stability analysis. Need at least 4 bins.")
-            continue
-        
-        # Try to find a balanced split
-        all_first_half_bins = np.concatenate([first_half_sleep_bins, first_half_wake_bins])
-        all_second_half_bins = np.concatenate([second_half_sleep_bins, second_half_wake_bins])
-        all_sleep_bins = np.concatenate([first_half_sleep_bins, second_half_sleep_bins])
-        all_wake_bins = np.concatenate([first_half_wake_bins, second_half_wake_bins])
-        
-        # Define constraints
-        success = False
-        iteration = 0
-        
-        start_time = time.time()
-        while not success and iteration < max_iterations:
-            # Create a random assignment (1 = C1, 0 = C2)
-            bin_assignment = np.zeros(num_large_bins, dtype=int)
-            
-            # Randomly assign bins to C1 (1) or C2 (0)
-            all_bins = np.arange(num_large_bins)
-            usable_bins = np.where(np.isin(all_bins, np.concatenate([all_first_half_bins, all_second_half_bins])))[0]
-            
-            # Randomly select ~50% of bins for C1
-            c1_bins = np.random.choice(usable_bins, size=len(usable_bins)//2, replace=False)
-            bin_assignment[c1_bins] = 1
-            
-            # Check balance criteria
-            if len(all_first_half_bins) > 0 and len(all_second_half_bins) > 0:
-                first_half_in_c1 = np.sum(bin_assignment[all_first_half_bins])
-                first_half_in_c2 = len(all_first_half_bins) - first_half_in_c1
-                
-                second_half_in_c1 = np.sum(bin_assignment[all_second_half_bins])
-                second_half_in_c2 = len(all_second_half_bins) - second_half_in_c1
-                
-                # Check temporal balance (no more than 70% from one half)
-                temporal_balance_c1 = (first_half_in_c1 / (first_half_in_c1 + second_half_in_c1) <= 0.7 and
-                                      second_half_in_c1 / (first_half_in_c1 + second_half_in_c1) <= 0.7)
-                
-                temporal_balance_c2 = (first_half_in_c2 / (first_half_in_c2 + second_half_in_c2) <= 0.7 and
-                                      second_half_in_c2 / (first_half_in_c2 + second_half_in_c2) <= 0.7)
-                
-                # Additional check: try to have at least one sleep/wake bin from each half
-                # This is a preferred constraint, not mandatory
-                preferred_constraint = True
-                
-                if len(all_sleep_bins) >= 2 and len(all_wake_bins) >= 2:
-                    sleep_in_c1 = np.sum(bin_assignment[all_sleep_bins])
-                    sleep_in_c2 = len(all_sleep_bins) - sleep_in_c1
-                    
-                    wake_in_c1 = np.sum(bin_assignment[all_wake_bins])
-                    wake_in_c2 = len(all_wake_bins) - wake_in_c1
-                    
-                    preferred_constraint = (sleep_in_c1 > 0 and sleep_in_c2 > 0 and
-                                           wake_in_c1 > 0 and wake_in_c2 > 0)
-                
-                # If both criteria are met, we're successful
-                if temporal_balance_c1 and temporal_balance_c2 and preferred_constraint:
-                    success = True
-                elif temporal_balance_c1 and temporal_balance_c2 and iteration > max_iterations//2:
-                    # If we've tried many times, accept solution with just temporal balance
-                    success = True
-            
-            iteration += 1
-        
-        end_time = time.time()
-        
-        if not success:
-            print(f"Could not find a balanced split for {probe} after {max_iterations} iterations. Using best available split.")
+        # Avoid division by zero
+        if p95 > 0:
+            normalized_counts[i, :] = cluster_counts / p95
         else:
-            print(f"Found balanced split after {iteration} iterations ({end_time - start_time:.2f}s)")
+            normalized_counts[i, :] = cluster_counts
+    
+    # Calculate how many original bins fit into our new larger bins
+    bins_per_large_bin = int(bin_size_s / original_bin_size)
+    num_large_bins = len(time_bins) // bins_per_large_bin
+    
+    if num_large_bins == 0:
+        print(f"Warning: Recording too short for {bin_size_s}s bins. Try a smaller bin size.")
+        return {}
+    
+    # Initialize arrays to store state and firing rates for each large bin
+    large_bin_states = []
+    large_bin_times = []
+    large_bin_firing_rates = np.zeros((normalized_counts.shape[0], num_large_bins))
+    
+    # Process each large bin
+    for i in range(num_large_bins):
+        start_idx = i * bins_per_large_bin
+        end_idx = min((i + 1) * bins_per_large_bin, len(time_bins))
         
-        # Calculate firing rates for each category
-        c1_mask = bin_assignment == 1
-        c2_mask = bin_assignment == 0
+        # Calculate bin center time
+        bin_center = np.mean(time_bins[start_idx:end_idx])
+        large_bin_times.append(bin_center)
         
-        # For debugging
-        c1_sleep = np.sum(c1_mask & np.isin(np.arange(num_large_bins), all_sleep_bins))
-        c1_wake = np.sum(c1_mask & np.isin(np.arange(num_large_bins), all_wake_bins))
-        c2_sleep = np.sum(c2_mask & np.isin(np.arange(num_large_bins), all_sleep_bins))
-        c2_wake = np.sum(c2_mask & np.isin(np.arange(num_large_bins), all_wake_bins))
+        # Calculate state for this bin
+        sleep_fraction = np.sum(sleep_mask[start_idx:end_idx]) / (end_idx - start_idx)
         
-        print(f"\nFinal bin distribution:")
-        print(f"C1: {np.sum(c1_mask)} bins total, {c1_sleep} sleep, {c1_wake} wake")
-        print(f"C2: {np.sum(c2_mask)} bins total, {c2_sleep} sleep, {c2_wake} wake")
+        if sleep_fraction >= state_threshold:
+            large_bin_states.append('Sleep')
+        elif sleep_fraction <= (1 - state_threshold):
+            large_bin_states.append('Wake')
+        else:
+            large_bin_states.append('Mixed')
         
-        # Calculate average firing rates in C1 and C2 for each cluster
-        c1_rates = np.zeros(counts.shape[0])
-        c2_rates = np.zeros(counts.shape[0])
+        # Calculate normalized firing rate for each cluster in this bin
+        for j in range(normalized_counts.shape[0]):
+            # Use normalized counts instead of raw counts
+            normalized_activity_in_bin = np.mean(normalized_counts[j, start_idx:end_idx])
+            large_bin_firing_rates[j, i] = normalized_activity_in_bin
+    
+    # Convert to arrays for easier manipulation
+    large_bin_times = np.array(large_bin_times)
+    large_bin_states = np.array(large_bin_states)
+    
+    # Identify recording midpoint
+    midpoint_time = (time_bins[0] + time_bins[-1]) / 2
+    
+    # Create bin groups
+    first_half_sleep_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Sleep'))[0]
+    first_half_wake_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Wake'))[0]
+    second_half_sleep_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Sleep'))[0]
+    second_half_wake_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Wake'))[0]
+    
+    # Print bin distribution
+    print(f"\nBin distribution for merged probes:")
+    print(f"First half sleep bins: {len(first_half_sleep_bins)}")
+    print(f"First half wake bins: {len(first_half_wake_bins)}")
+    print(f"Second half sleep bins: {len(second_half_sleep_bins)}")
+    print(f"Second half wake bins: {len(second_half_wake_bins)}")
+    
+    # Check if we have enough bins for analysis
+    total_usable_bins = len(first_half_sleep_bins) + len(first_half_wake_bins) + len(second_half_sleep_bins) + len(second_half_wake_bins)
+    if total_usable_bins < 4:
+        print("Not enough usable bins to perform stability analysis. Need at least 4 bins.")
+        return {}
+    
+    # Try to find a balanced split
+    all_first_half_bins = np.concatenate([first_half_sleep_bins, first_half_wake_bins])
+    all_second_half_bins = np.concatenate([second_half_sleep_bins, second_half_wake_bins])
+    all_sleep_bins = np.concatenate([first_half_sleep_bins, second_half_sleep_bins])
+    all_wake_bins = np.concatenate([first_half_wake_bins, second_half_wake_bins])
+    
+    # Define constraints
+    success = False
+    iteration = 0
+    
+    start_time = time.time()
+    while not success and iteration < max_iterations:
+        # Create a random assignment (1 = C1, 0 = C2)
+        bin_assignment = np.zeros(num_large_bins, dtype=int)
         
-        # Also calculate sleep-wake difference for each category
-        c1_sleep_rates = np.zeros(counts.shape[0])
-        c1_wake_rates = np.zeros(counts.shape[0])
-        c2_sleep_rates = np.zeros(counts.shape[0])
-        c2_wake_rates = np.zeros(counts.shape[0])
+        # Randomly assign bins to C1 (1) or C2 (0)
+        all_bins = np.arange(num_large_bins)
+        usable_bins = np.where(np.isin(all_bins, np.concatenate([all_first_half_bins, all_second_half_bins])))[0]
         
-        for i in range(counts.shape[0]):
-            # Average rates in each category
-            c1_rates[i] = np.mean(large_bin_firing_rates[i, c1_mask]) if np.sum(c1_mask) > 0 else np.nan
-            c2_rates[i] = np.mean(large_bin_firing_rates[i, c2_mask]) if np.sum(c2_mask) > 0 else np.nan
+        # Randomly select ~50% of bins for C1
+        c1_bins = np.random.choice(usable_bins, size=len(usable_bins)//2, replace=False)
+        bin_assignment[c1_bins] = 1
+        
+        # Check balance criteria
+        if len(all_first_half_bins) > 0 and len(all_second_half_bins) > 0:
+            first_half_in_c1 = np.sum(bin_assignment[all_first_half_bins])
+            first_half_in_c2 = len(all_first_half_bins) - first_half_in_c1
             
-            # Sleep/wake rates in C1
-            c1_sleep_mask = c1_mask & np.isin(np.arange(num_large_bins), all_sleep_bins)
-            c1_wake_mask = c1_mask & np.isin(np.arange(num_large_bins), all_wake_bins)
+            second_half_in_c1 = np.sum(bin_assignment[all_second_half_bins])
+            second_half_in_c2 = len(all_second_half_bins) - second_half_in_c1
             
-            c1_sleep_rates[i] = np.mean(large_bin_firing_rates[i, c1_sleep_mask]) if np.sum(c1_sleep_mask) > 0 else np.nan
-            c1_wake_rates[i] = np.mean(large_bin_firing_rates[i, c1_wake_mask]) if np.sum(c1_wake_mask) > 0 else np.nan
+            # Check temporal balance (no more than 70% from one half)
+            temporal_balance_c1 = (first_half_in_c1 / (first_half_in_c1 + second_half_in_c1) <= 0.7 and
+                                  second_half_in_c1 / (first_half_in_c1 + second_half_in_c1) <= 0.7)
             
-            # Sleep/wake rates in C2
-            c2_sleep_mask = c2_mask & np.isin(np.arange(num_large_bins), all_sleep_bins)
-            c2_wake_mask = c2_mask & np.isin(np.arange(num_large_bins), all_wake_bins)
+            temporal_balance_c2 = (first_half_in_c2 / (first_half_in_c2 + second_half_in_c2) <= 0.7 and
+                                  second_half_in_c2 / (first_half_in_c2 + second_half_in_c2) <= 0.7)
             
-            c2_sleep_rates[i] = np.mean(large_bin_firing_rates[i, c2_sleep_mask]) if np.sum(c2_sleep_mask) > 0 else np.nan
-            c2_wake_rates[i] = np.mean(large_bin_firing_rates[i, c2_wake_mask]) if np.sum(c2_wake_mask) > 0 else np.nan
+            # Additional check: try to have at least one sleep/wake bin from each half
+            preferred_constraint = True
+            
+            if len(all_sleep_bins) >= 2 and len(all_wake_bins) >= 2:
+                # This is a preferred constraint, not mandatory
+                pass
+            
+            # If both criteria are met, we're successful
+            if temporal_balance_c1 and temporal_balance_c2 and preferred_constraint:
+                success = True
+            elif temporal_balance_c1 and temporal_balance_c2 and iteration > max_iterations//2:
+                success = True
         
-        # Calculate modulation
-        c1_modulation = c1_wake_rates - c1_sleep_rates
-        c2_modulation = c2_wake_rates - c2_sleep_rates
+        iteration += 1
+    
+    end_time = time.time()
+    
+    if not success:
+        print(f"Could not find a balanced split after {max_iterations} iterations. Using best available split.")
+    else:
+        print(f"Found balanced split after {iteration} iterations ({end_time - start_time:.2f}s)")
+    
+    # Calculate firing rates for each category
+    c1_mask = bin_assignment == 1
+    c2_mask = bin_assignment == 0
+    
+    # For debugging
+    c1_sleep = np.sum(c1_mask & np.isin(np.arange(num_large_bins), all_sleep_bins))
+    c1_wake = np.sum(c1_mask & np.isin(np.arange(num_large_bins), all_wake_bins))
+    c2_sleep = np.sum(c2_mask & np.isin(np.arange(num_large_bins), all_sleep_bins))
+    c2_wake = np.sum(c2_mask & np.isin(np.arange(num_large_bins), all_wake_bins))
+    
+    print(f"\nFinal bin distribution:")
+    print(f"C1: {np.sum(c1_mask)} bins total, {c1_sleep} sleep, {c1_wake} wake")
+    print(f"C2: {np.sum(c2_mask)} bins total, {c2_sleep} sleep, {c2_wake} wake")
+    
+    # Calculate average normalized firing rates in C1 and C2 for each cluster
+    c1_rates = np.zeros(normalized_counts.shape[0])
+    c2_rates = np.zeros(normalized_counts.shape[0])
+    
+    # Also calculate sleep-wake difference for each category
+    c1_sleep_rates = np.zeros(normalized_counts.shape[0])
+    c1_wake_rates = np.zeros(normalized_counts.shape[0])
+    c2_sleep_rates = np.zeros(normalized_counts.shape[0])
+    c2_wake_rates = np.zeros(normalized_counts.shape[0])
+    
+    for i in range(normalized_counts.shape[0]):
+        # Average normalized rates in each category
+        c1_rates[i] = np.mean(large_bin_firing_rates[i, c1_mask]) if np.sum(c1_mask) > 0 else np.nan
+        c2_rates[i] = np.mean(large_bin_firing_rates[i, c2_mask]) if np.sum(c2_mask) > 0 else np.nan
         
-        # Store results
-        stability_results[probe] = {
-            'cluster_ids': cluster_ids,
+        # Sleep/wake rates in C1
+        c1_sleep_mask = c1_mask & np.isin(np.arange(num_large_bins), all_sleep_bins)
+        c1_wake_mask = c1_mask & np.isin(np.arange(num_large_bins), all_wake_bins)
+        
+        c1_sleep_rates[i] = np.mean(large_bin_firing_rates[i, c1_sleep_mask]) if np.sum(c1_sleep_mask) > 0 else np.nan
+        c1_wake_rates[i] = np.mean(large_bin_firing_rates[i, c1_wake_mask]) if np.sum(c1_wake_mask) > 0 else np.nan
+        
+        # Sleep/wake rates in C2
+        c2_sleep_mask = c2_mask & np.isin(np.arange(num_large_bins), all_sleep_bins)
+        c2_wake_mask = c2_mask & np.isin(np.arange(num_large_bins), all_wake_bins)
+        
+        c2_sleep_rates[i] = np.mean(large_bin_firing_rates[i, c2_sleep_mask]) if np.sum(c2_sleep_mask) > 0 else np.nan
+        c2_wake_rates[i] = np.mean(large_bin_firing_rates[i, c2_wake_mask]) if np.sum(c2_wake_mask) > 0 else np.nan
+    
+    # Calculate modulation
+    c1_modulation = c1_wake_rates - c1_sleep_rates
+    c2_modulation = c2_wake_rates - c2_sleep_rates
+    
+    # Store results
+    stability_results = {
+        'merged': {
+            'cluster_ids': all_cluster_ids,
             'c1_rates': c1_rates,
             'c2_rates': c2_rates,
             'c1_sleep_rates': c1_sleep_rates,
@@ -1095,122 +1220,120 @@ def analyze_neuronal_stability(results, output_dir=None, save_plots=False, bin_s
             'c1_modulation': c1_modulation,
             'c2_modulation': c2_modulation
         }
+    }
+    
+    # Create figure with 2 subplots
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    
+    # Plot 1: Average normalized firing rates C1 vs C2
+    valid_mask = ~np.isnan(c1_rates) & ~np.isnan(c2_rates)
+    
+    if np.sum(valid_mask) > 1:
+        # Get max value for axis scaling
+        max_val = max(np.nanmax(c1_rates), np.nanmax(c2_rates))
         
-        # Create figure with 2 subplots
-        fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+        # Create scatter plot
+        axes[0].scatter(c1_rates[valid_mask], c2_rates[valid_mask], alpha=0.7)
         
-        # Plot 1: Average firing rates C1 vs C2
-        valid_mask = ~np.isnan(c1_rates) & ~np.isnan(c2_rates)
+        # Add identity line
+        axes[0].plot([0, max_val*1.1], [0, max_val*1.1], 'k--', alpha=0.7)
         
-        if np.sum(valid_mask) > 1:
-            # Get max value for axis scaling
-            max_val = max(np.nanmax(c1_rates), np.nanmax(c2_rates))
-            
-            # Create scatter plot
-            axes[0].scatter(c1_rates[valid_mask], c2_rates[valid_mask], alpha=0.7)
-            
-            # Add identity line
-            axes[0].plot([0, max_val*1.1], [0, max_val*1.1], 'k--', alpha=0.7)
-            
-            # Add regression line
-            slope, intercept, r_value, p_value, std_err = stats.linregress(
-                c1_rates[valid_mask], c2_rates[valid_mask]
-            )
-            
-            x_vals = np.array([0, max_val*1.1])
-            axes[0].plot(x_vals, intercept + slope * x_vals, 'r-', alpha=0.7,
-                        label=f'y = {slope:.2f}x + {intercept:.2f} (r²={r_value**2:.2f}, p={p_value:.4f})')
-            
-            axes[0].set_xlabel('Category 1 - Average Firing Rate (Hz)')
-            axes[0].set_ylabel('Category 2 - Average Firing Rate (Hz)')
-            axes[0].set_title(f'{probe}: Neuronal Stability - Firing Rate Consistency')
-            axes[0].legend()
-            axes[0].grid(True, alpha=0.3)
-        else:
-            axes[0].text(0.5, 0.5, 'Insufficient data for analysis',
-                       ha='center', va='center', transform=axes[0].transAxes)
+        # Add regression line
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            c1_rates[valid_mask], c2_rates[valid_mask]
+        )
         
-        # Plot 2: Sleep-Wake modulation consistency
-        valid_mod_mask = (~np.isnan(c1_modulation) & ~np.isnan(c2_modulation))
+        x_vals = np.array([0, max_val*1.1])
+        axes[0].plot(x_vals, intercept + slope * x_vals, 'r-', alpha=0.7,
+                    label=f'y = {slope:.2f}x + {intercept:.2f} (r²={r_value**2:.2f}, p={p_value:.4f})')
         
-        if np.sum(valid_mod_mask) > 1:
-            # Get max absolute value for axis scaling
-            max_mod = max(
-                np.nanmax(np.abs(c1_modulation)), 
-                np.nanmax(np.abs(c2_modulation))
-            ) * 1.1
-            
-            # Create scatter plot
-            axes[1].scatter(c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask], alpha=0.7)
-            
-            # Add identity line
-            axes[1].plot([-max_mod, max_mod], [-max_mod, max_mod], 'k--', alpha=0.7)
-            
-            # Add regression line
-            mod_slope, mod_intercept, mod_r, mod_p, mod_err = stats.linregress(
-                c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask]
-            )
-            
-            x_mod_vals = np.array([-max_mod, max_mod])
-            axes[1].plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7,
-                        label=f'y = {mod_slope:.2f}x + {mod_intercept:.2f} (r²={mod_r**2:.2f}, p={mod_p:.4f})')
-            
-            # Add quadrant lines
-            axes[1].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-            axes[1].axvline(x=0, color='gray', linestyle='-', alpha=0.3)
-            
-            # Count points in each quadrant
-            q1 = np.sum((c1_modulation > 0) & (c2_modulation > 0) & valid_mod_mask)
-            q2 = np.sum((c1_modulation < 0) & (c2_modulation > 0) & valid_mod_mask)
-            q3 = np.sum((c1_modulation < 0) & (c2_modulation < 0) & valid_mod_mask)
-            q4 = np.sum((c1_modulation > 0) & (c2_modulation < 0) & valid_mod_mask)
-            
-            print(f"\nModulation quadrant counts:")
-            print(f"Q1 (Wake selective in both): {q1}")
-            print(f"Q2 (Sleep in C1, Wake in C2): {q2}")
-            print(f"Q3 (Sleep selective in both): {q3}")
-            print(f"Q4 (Wake in C1, Sleep in C2): {q4}")
-            
-            axes[1].set_xlabel('Category 1 - Wake-Sleep Modulation (Hz)')
-            axes[1].set_ylabel('Category 2 - Wake-Sleep Modulation (Hz)')
-            axes[1].set_title(f'{probe}: Sleep-Wake Modulation Consistency')
-            axes[1].legend()
-            axes[1].grid(True, alpha=0.3)
-            
-            # Set equal x and y limits
-            axes[1].set_xlim(-max_mod, max_mod)
-            axes[1].set_ylim(-max_mod, max_mod)
-        else:
-            axes[1].text(0.5, 0.5, 'Insufficient data for modulation analysis',
-                       ha='center', va='center', transform=axes[1].transAxes)
+        axes[0].set_xlabel('Category 1 - Average Normalized Firing Rate')
+        axes[0].set_ylabel('Category 2 - Average Normalized Firing Rate')
+        axes[0].set_title('Merged Probes: Neuronal Stability - Normalized Firing Rate Consistency')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+    else:
+        axes[0].text(0.5, 0.5, 'Insufficient data for analysis',
+                   ha='center', va='center', transform=axes[0].transAxes)
+    
+    # Plot 2: Sleep-Wake modulation consistency
+    valid_mod_mask = (~np.isnan(c1_modulation) & ~np.isnan(c2_modulation))
+    
+    if np.sum(valid_mod_mask) > 1:
+        # Get max absolute value for axis scaling
+        max_mod = max(
+            np.nanmax(np.abs(c1_modulation)), 
+            np.nanmax(np.abs(c2_modulation))
+        ) * 1.1
         
-        plt.tight_layout()
+        # Create scatter plot
+        axes[1].scatter(c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask], alpha=0.7)
         
-        # Save plot if requested
-        if save_plots and output_dir:
-            # Create output directory if it doesn't exist
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{probe}_neuronal_stability_{timestamp}.png"
-            filepath = os.path.join(output_dir, filename)
-            
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            print(f"Saved plot to: {filepath}")
+        # Add identity line
+        axes[1].plot([-max_mod, max_mod], [-max_mod, max_mod], 'k--', alpha=0.7)
         
-        plt.show()
+        # Add regression line
+        mod_slope, mod_intercept, mod_r, mod_p, mod_err = stats.linregress(
+            c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask]
+        )
         
-        # Calculate stability metrics
-        if np.sum(valid_mask) > 1:
-            print(f"\nStability metrics for {probe}:")
-            print(f"Firing rate correlation: r = {r_value:.4f}, p = {p_value:.4f}")
-            print(f"Modulation correlation: r = {mod_r:.4f}, p = {mod_p:.4f}")
-            
-            # Calculate percentage of neurons that maintain consistent sleep/wake preference
-            consistent = (q1 + q3) / np.sum(valid_mod_mask) if np.sum(valid_mod_mask) > 0 else np.nan
-            print(f"Neurons with consistent sleep/wake preference: {consistent*100:.1f}%")
+        x_mod_vals = np.array([-max_mod, max_mod])
+        axes[1].plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7,
+                    label=f'y = {mod_slope:.2f}x + {mod_intercept:.2f} (r²={mod_r**2:.2f}, p={mod_p:.4f})')
         
+        # Add quadrant lines
+        axes[1].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axes[1].axvline(x=0, color='gray', linestyle='-', alpha=0.3)
+        
+        # Count points in each quadrant
+        q1 = np.sum((c1_modulation > 0) & (c2_modulation > 0) & valid_mod_mask)
+        q2 = np.sum((c1_modulation < 0) & (c2_modulation > 0) & valid_mod_mask)
+        q3 = np.sum((c1_modulation < 0) & (c2_modulation < 0) & valid_mod_mask)
+        q4 = np.sum((c1_modulation > 0) & (c2_modulation < 0) & valid_mod_mask)
+        
+        print(f"\nModulation quadrant counts:")
+        print(f"Q1 (Wake selective in both): {q1}")
+        print(f"Q2 (Sleep in C1, Wake in C2): {q2}")
+        print(f"Q3 (Sleep selective in both): {q3}")
+        print(f"Q4 (Wake in C1, Sleep in C2): {q4}")
+        
+        axes[1].set_xlabel('Category 1 - Wake-Sleep Modulation (Normalized)')
+        axes[1].set_ylabel('Category 2 - Wake-Sleep Modulation (Normalized)')
+        axes[1].set_title('Merged Probes: Sleep-Wake Modulation Consistency')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        
+        # Set equal x and y limits
+        axes[1].set_xlim(-max_mod, max_mod)
+        axes[1].set_ylim(-max_mod, max_mod)
+    else:
+        axes[1].text(0.5, 0.5, 'Insufficient data for modulation analysis',
+                   ha='center', va='center', transform=axes[1].transAxes)
+    
+    plt.tight_layout()
+    
+    # Save plot if requested
+    if save_plots and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"merged_probes_neuronal_stability_{timestamp}.png"
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"Saved plot to: {filepath}")
+    
+    plt.show()
+    
+    # Calculate stability metrics
+    if np.sum(valid_mask) > 1:
+        print(f"\nStability metrics for merged probes:")
+        print(f"Total clusters analyzed: {len(all_cluster_ids)}")
+        print(f"Normalized firing rate correlation: r = {r_value:.4f}, p = {p_value:.4f}")
+        print(f"Modulation correlation: r = {mod_r:.4f}, p = {mod_p:.4f}")
+        
+        # Calculate percentage of neurons that maintain consistent sleep/wake preference
+        consistent = (q1 + q3) / np.sum(valid_mod_mask) if np.sum(valid_mod_mask) > 0 else np.nan
+        print(f"Neurons with consistent sleep/wake preference: {consistent*100:.1f}%")
+    
     return stability_results
 
 
@@ -1531,7 +1654,7 @@ def analyze_power_spectrum(results, output_dir=None, save_plots=False,
 
 
 def combined_visualization(results, freq_results, np_results, spectrum_results, 
-                          dlc_folder, output_dir=None, save_plots=False, smoothed_results=None):
+                          dlc_folder, output_dir=None, save_plots=False, smoothed_results=None, pca_results=None):
     """
     Create a combined visualization of sleep-wake activity, power spectrum analysis,
     and behavioral data using pre-computed results.
@@ -1617,7 +1740,7 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
     
     # Create figure with 5 subplots with custom height ratios (added behavior plot)
     fig = plt.figure(figsize=(16, 24))
-    gs = gridspec.GridSpec(5, 1, height_ratios=[1, 3, 1, 3, 1.5], figure=fig)
+    gs = gridspec.GridSpec(6, 1, height_ratios=[1, 3, 1, 1, 3, 1.5], figure=fig)
     
     # ================ PLOT 1: BEHAVIOR DATA ================
     ax_behav = fig.add_subplot(gs[0])
@@ -1785,8 +1908,27 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         ax2.set_ylabel('Mean spike count')
         ax2.set_xlim(time_extent)
     
-    # ================ PLOT 4: POWER SPECTRUM ================
+    # ================ PLOT 4: PC1 over time ================
+
     ax3 = fig.add_subplot(gs[3], sharex=ax_behav)
+    if pca_results is not None:
+        pc1_data = pca_results['pca_result'][:, 0]
+        time_bins_pca = pca_results['time_bins_used']
+        ax3.plot(time_bins_pca, pc1_data, color='black', linewidth=0.7)
+        ax3.set_title('PC1 over time (raw)')
+        ax3.set_ylabel('PC1 Score')
+        for _, bout in sleep_bouts.iterrows():
+            ax3.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+                        color='lightblue', alpha=0.3, ec='none')
+        ax3.grid(True, alpha=0.2)
+        ax3.legend()
+        ax3.set_xlim(time_extent)
+    else:
+        print("Warning: PCA results not available. Cannot plot PC1 over time.")
+
+
+    # ================ PLOT 5: POWER SPECTRUM ================
+    ax4 = fig.add_subplot(gs[4], sharex=ax_behav)
     
     # Get or calculate power spectrum
     if 'merged' in spectrum_results and 'power_spectrum' in spectrum_results['merged']:
@@ -1827,29 +1969,29 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
             freq_time_bins = freq_results[reference_probe]['time_bins']
             spec_extent = [freq_time_bins[0], freq_time_bins[-1], frequencies_filtered[0], frequencies_filtered[-1]]
         
-        im3 = ax3.matshow(Sxx_db_filtered, aspect='auto', origin='lower', 
+        im3 = ax4.matshow(Sxx_db_filtered, aspect='auto', origin='lower', 
                         extent=spec_extent, cmap='viridis',
                         vmin=vmin, vmax=vmax)
         
         # Add sleep bout outlines as vertical lines
         for _, bout in sleep_bouts.iterrows():
-            ax3.axvline(x=bout['start_bin_time'], color='white', linestyle='--', alpha=0.7)
-            ax3.axvline(x=bout['end_bin_time'], color='white', linestyle='--', alpha=0.7)
+            ax4.axvline(x=bout['start_bin_time'], color='white', linestyle='--', alpha=0.7)
+            ax4.axvline(x=bout['end_bin_time'], color='white', linestyle='--', alpha=0.7)
         
         # Add horizontal lines for frequency bands
-        ax3.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
-        ax3.axhline(y=4, color='white', linestyle='-', alpha=0.5, label='Delta end / Theta start (4Hz)')
-        ax3.axhline(y=8, color='white', linestyle='-', alpha=0.5, label='Theta end (8Hz)')
+        ax4.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
+        ax4.axhline(y=4, color='white', linestyle='-', alpha=0.5, label='Delta end / Theta start (4Hz)')
+        ax4.axhline(y=8, color='white', linestyle='-', alpha=0.5, label='Theta end (8Hz)')
         
         # Note: removing colorbar for this plot to ensure consistent width
-        ax3.set_title('Power Spectrum')
-        ax3.set_ylabel('Frequency (Hz)')
-        ax3.legend(loc='upper right', fontsize='small')
-        ax3.set_xlim(time_extent)  # Use the same time extent as other plots
+        ax4.set_title('Power Spectrum')
+        ax4.set_ylabel('Frequency (Hz)')
+        ax4.legend(loc='upper right', fontsize='small')
+        ax4.set_xlim(time_extent)  # Use the same time extent as other plots
     
-    # ================ PLOT 5: FREQUENCY BAND POWER ================
-    ax4 = fig.add_subplot(gs[4], sharex=ax_behav)
-    
+    # ================ PLOT 6: FREQUENCY BAND POWER ================
+    ax5 = fig.add_subplot(gs[5], sharex=ax_behav)
+
     # Check if we have smoothed data available from the smoothed_results parameter
     band_powers = None
     smoothed_available = False
@@ -1896,20 +2038,20 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Plot each band
         for band_name, power in band_powers.items():
-            ax4.plot(spec_times, power, label=f"{band_name} {'(Smoothed)' if smoothed_available else ''}", linewidth=1.5)
+            ax5.plot(spec_times, power, label=f"{band_name} {'(Smoothed)' if smoothed_available else ''}", linewidth=1.5)
         
         # Add sleep bout highlights
         for _, bout in sleep_bouts.iterrows():
-            ax4.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
+            ax5.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
                         color='lightblue', alpha=0.3, ec='none')
         
         title_suffix = " (Smoothed)" if smoothed_available else ""
-        ax4.set_title(f'Power in Frequency Bands Over Time{title_suffix}')
-        ax4.set_ylabel('Power (dB)')
-        ax4.set_xlabel('Time (s)')
-        ax4.legend(loc='upper right')
-        ax4.grid(True, alpha=0.3)
-        ax4.set_xlim(time_extent)  # Use the same time extent as other plots
+        ax5.set_title(f'Power in Frequency Bands Over Time{title_suffix}')
+        ax5.set_ylabel('Power (dB)')
+        ax5.set_xlabel('Time (s)')
+        ax5.legend(loc='upper right')
+        ax5.grid(True, alpha=0.3)
+        ax5.set_xlim(time_extent)  # Use the same time extent as other plots
     
     # Adjust layout to make better use of space now that colorbars are removed
     plt.subplots_adjust(hspace=0.4, left=0.06, right=0.98, top=0.96, bottom=0.05)
@@ -2452,3 +2594,544 @@ def save_sleep_periods_to_csv(smoothed_results, output_dir, used_filter='SG', fr
         print(f"Frame range: {df['start_frame'].min()}-{df['end_frame'].max()}")
     
     return filepath
+
+
+
+def combine_neural_data(results_dict, output_folder, subject, exp_date, exp_num, bin_type='low_res'):
+    """
+    Combines neural data from multiple probes and saves as numpy array.
+    
+    Parameters:
+    ----------
+    results_dict : dict
+        Either 'results' (low-res, 100ms bins) or 'freq_results' (high-res, 5ms bins)
+    output_folder : str
+        Directory to save output file
+    subject : str
+        Subject ID
+    exp_date : str
+        Experiment date
+    exp_num : str
+        Experiment number
+    bin_type : str
+        'low_res' (100ms) or 'high_res' (5ms) to indicate in filename
+        
+    Returns:
+    --------
+    str : Path to saved file
+    """
+    # Extract and combine good/MUA neurons from both probes
+    probe0_matrix = results_dict['probe0']['counts'][results_dict['probe0']['good_mua_cluster_mask'], :]
+    probe1_matrix = results_dict['probe1']['counts'][results_dict['probe1']['good_mua_cluster_mask'], :]
+    
+    # Ensure same number of timepoints
+    min_timepoints = min(probe0_matrix.shape[1], probe1_matrix.shape[1])
+    probe0_matrix = probe0_matrix[:, :min_timepoints]
+    probe1_matrix = probe1_matrix[:, :min_timepoints]
+    
+    # Stack matrices and convert to float32
+    combined_matrix = np.vstack((probe0_matrix, probe1_matrix))
+    combined_matrix = combined_matrix.astype(np.float32)
+    
+    # Save to NPY file
+    output_file = os.path.join(output_folder, 
+                              f"{subject}_{exp_date}_{exp_num}_combined_neural_{bin_type}.npy")
+    np.save(output_file, combined_matrix)
+    
+    print(f"Saved combined matrix with shape {combined_matrix.shape} to {output_file}")
+    return output_file
+
+def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df, 
+                     subject, output_folder, n_components=3, components_to_plot=(0,1), 
+                     downsample_factor=1, pc_index_to_plot=0):
+    """
+    Performs PCA on neural data, creates visualizations, and returns results.
+    
+    Parameters:
+    ----------
+    combined_matrix : ndarray
+        Neural data matrix (neurons x timepoints)
+    state_labels : ndarray
+        Labels for each timepoint (0=wake, 1=sleep)
+    time_bins : ndarray
+        Time bins corresponding to data points
+    neural_sleep_df : DataFrame
+        DataFrame containing sleep bout information
+    subject : str
+        Subject ID for plot titles
+    output_folder : str
+        Directory to save output plots
+    n_components : int
+        Number of PCA components to compute
+    components_to_plot : tuple
+        Which components to plot (zero-indexed)
+    downsample_factor : int
+        Factor to downsample data for faster computation (1 = no downsampling)
+    pc_index_to_plot : int
+        Which PC index to use for the timeseries plot (zero-indexed)
+        
+    Returns:
+    --------
+    dict : PCA results and analysis
+    """
+    # Transpose matrix for PCA (timepoints x neurons)
+    X = combined_matrix.T
+    
+    # Apply downsampling if requested
+    if downsample_factor > 1:
+        X = X[::downsample_factor]
+        state_labels_used = state_labels[::downsample_factor]
+        time_bins_used = time_bins[::downsample_factor]
+    else:
+        state_labels_used = state_labels
+        time_bins_used = time_bins
+    
+    print(f"Shape of data for PCA: {X.shape}")
+    
+    # Standardize data
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Run PCA with requested number of components
+    pca = PCA(n_components=n_components)
+    pca_result = pca.fit_transform(X_scaled) # Shape: (n_samples, n_components)
+    
+    # Create masks for sleep and wake based on state_labels_used
+    # Assuming 0 = Wake, 1 = Sleep in state_labels_used
+    sleep_mask_orig = state_labels_used == 1
+    wake_mask_orig = state_labels_used == 0
+    
+    # Plot the selected components
+    comp1_idx, comp2_idx = components_to_plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Plot the selected components - CORRECTED COLORS
+    ax1.scatter(pca_result[wake_mask_orig, comp1_idx], pca_result[wake_mask_orig, comp2_idx], 
+              c='orange', alpha=0.5, s=5, label='Wake') # Wake is orange
+    ax1.scatter(pca_result[sleep_mask_orig, comp1_idx], pca_result[sleep_mask_orig, comp2_idx], 
+              c='blue', alpha=0.5, s=5, label='Sleep')   # Sleep is blue
+    ax1.set_xlabel(f'PC{comp1_idx+1} ({pca.explained_variance_ratio_[comp1_idx]:.1%} variance)')
+    ax1.set_ylabel(f'PC{comp2_idx+1} ({pca.explained_variance_ratio_[comp2_idx]:.1%} variance)')
+    ax1.set_title(f'{subject}: Neural State Space PC{comp1_idx+1} vs PC{comp2_idx+1}')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    ax1.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    # Plot explained variance
+    ax2.plot(range(1, n_components + 1), pca.explained_variance_ratio_, 'o-', color='blue')
+    ax2.plot(range(1, n_components + 1), np.cumsum(pca.explained_variance_ratio_), 'o-', color='red')
+    ax2.set_xlabel('Principal Component')
+    ax2.set_ylabel('Explained Variance Ratio')
+    ax2.set_title('Explained Variance by Component')
+    ax2.axhline(y=0.5, color='gray', linestyle='--', label='50% Explained Variance')
+    ax2.grid(True)
+    ax2.legend(['Individual', 'Cumulative', '50% Threshold'])
+    
+    plt.tight_layout()
+    original_scatter_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_scatter_states.png")
+    plt.savefig(original_scatter_filename, dpi=300)
+    plt.show()
+    
+    # Plot PC (specified by pc_index_to_plot) over time with sleep bouts highlighted
+    plt.figure(figsize=(15, 6))
+    plt.plot(time_bins_used, pca_result[:, pc_index_to_plot], 'k-', linewidth=0.5)
+    
+    y_min_ts, y_max_ts = plt.ylim() # Get y-limits for axvspan
+    for _, row in neural_sleep_df.iterrows():
+        plt.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                   ymin=0, ymax=1, color='blue', alpha=0.2) # ymin/ymax relative to axes
+
+    plt.title(f"{subject}: PC{pc_index_to_plot +1} over Recording Time")
+    plt.xlabel('Time (s)')
+    plt.ylabel(f'PC{pc_index_to_plot +1} Score')
+    plt.tight_layout()
+    timeseries_plot_filename = os.path.join(output_folder, f"{subject}_pc{pc_index_to_plot +1}_timeseries.png")
+    plt.savefig(timeseries_plot_filename, dpi=300)
+    plt.show()
+    
+    # --- Integration of New Plots ---
+    pc1_scores_new_plots = pca_result[:, comp1_idx]
+    pc2_scores_new_plots = pca_result[:, comp2_idx]
+    explained_var_pc1_new = pca.explained_variance_ratio_[comp1_idx]
+    explained_var_pc2_new = pca.explained_variance_ratio_[comp2_idx]
+
+    # --- Prepare bout information (common for new Plot A & B) ---
+    all_bouts_list_new = []
+    last_time_point_new = time_bins_used[-1] if len(time_bins_used) > 0 else 0
+    current_time_new = time_bins_used[0] if len(time_bins_used) > 0 else 0
+
+    df_neural_sleep_sorted_new = neural_sleep_df.sort_values(by='start_timestamp_s').reset_index()
+
+    for _, sleep_bout_new in df_neural_sleep_sorted_new.iterrows():
+        if sleep_bout_new['start_timestamp_s'] > current_time_new:
+            all_bouts_list_new.append({'start': current_time_new, 'end': sleep_bout_new['start_timestamp_s'], 'type': 'wake'})
+        all_bouts_list_new.append({'start': sleep_bout_new['start_timestamp_s'], 'end': sleep_bout_new['end_timestamp_s'], 'type': 'sleep'})
+        current_time_new = sleep_bout_new['end_timestamp_s']
+    if len(time_bins_used) > 0 and current_time_new < last_time_point_new:
+        all_bouts_list_new.append({'start': current_time_new, 'end': last_time_point_new, 'type': 'wake'})
+    
+    df_all_bouts_new = pd.DataFrame(all_bouts_list_new)
+            
+    # Create masks for sleep and wake points for density plot (Plot A)
+    density_sleep_mask = np.zeros(len(time_bins_used), dtype=bool)
+    density_wake_mask = np.zeros(len(time_bins_used), dtype=bool)
+
+    if not df_all_bouts_new.empty and len(time_bins_used) > 0:
+        for _, bout_new in df_all_bouts_new.iterrows():
+            bout_indices_new = (time_bins_used >= bout_new['start']) & (time_bins_used < bout_new['end'])
+            if bout_new['type'] == 'sleep':
+                density_sleep_mask[bout_indices_new] = True
+            else: # wake
+                density_wake_mask[bout_indices_new] = True
+            
+    pc1_sleep_density_new = pc1_scores_new_plots[density_sleep_mask]
+    pc2_sleep_density_new = pc2_scores_new_plots[density_sleep_mask]
+    pc1_wake_density_new = pc1_scores_new_plots[density_wake_mask]
+    pc2_wake_density_new = pc2_scores_new_plots[density_wake_mask]
+
+    # --- Custom Colormaps for Plot A (Density) ---
+    custom_blues_colors_new = [(0, "#08306b"), (0.5, "#4292c6"), (1, "#c6dbef")] 
+    custom_blues_cmap_new = LinearSegmentedColormap.from_list("custom_blues_new", custom_blues_colors_new)
+    custom_oranges_colors_new = [(0, "#a63603"), (0.5, "#fd8d3c"), (1, "#feedde")]
+    custom_oranges_cmap_new = LinearSegmentedColormap.from_list("custom_oranges_new", custom_oranges_colors_new)
+
+    # --- Plot A: PC1 vs PC2 Density Plot (State-Specific Colors, White Background) ---
+    plt.figure(figsize=(10, 8))
+    if len(pc1_wake_density_new) > 1 and len(pc2_wake_density_new) > 1:
+        sns.kdeplot(x=pc1_wake_density_new, y=pc2_wake_density_new, cmap=custom_oranges_cmap_new, fill=True, thresh=0.05, alpha=0.75, n_levels=100, label="Wake Density")
+    if len(pc1_sleep_density_new) > 1 and len(pc2_sleep_density_new) > 1:
+        sns.kdeplot(x=pc1_sleep_density_new, y=pc2_sleep_density_new, cmap=custom_blues_cmap_new, fill=True, thresh=0.05, alpha=0.75, n_levels=100, label="Sleep Density")
+    
+    plt.xlabel(f'PC{comp1_idx + 1} ({explained_var_pc1_new:.1%} variance)')
+    plt.ylabel(f'PC{comp2_idx + 1} ({explained_var_pc2_new:.1%} variance)')
+    plt.title(f'{subject}: PC{comp1_idx + 1} vs PC{comp2_idx + 1} State-Specific Density')
+    plt.grid(True, alpha=0.3)
+    plt.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    plt.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    plt.legend()
+    plot_a_filename_new = os.path.join(output_folder, f"{subject}_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_density_states.png")
+    plt.savefig(plot_a_filename_new, dpi=300)
+    plt.show()
+
+    # --- Plot B: PC1 vs PC2 Scatter with Discrete Phased Coloring ---
+    plt.figure(figsize=(12, 10))
+    
+    num_phases_new = 3 
+    phase_labels_new = ['Early', 'Mid', 'Late'] if num_phases_new == 3 else ['Early', 'Mid-Early', 'Mid-Late', 'Late']
+    
+    sleep_phase_palette_new = ListedColormap(plt.cm.Blues(np.linspace(0.8, 0.3, num_phases_new)))
+    wake_phase_palette_new = ListedColormap(plt.cm.Oranges(np.linspace(0.8, 0.3, num_phases_new)))
+    
+    point_colors_phased_new = ['gray'] * len(time_bins_used) if len(time_bins_used) > 0 else []
+
+    if len(time_bins_used) > 0 and not df_all_bouts_new.empty:
+        for i_new, t_new in enumerate(time_bins_used):
+            for _, bout_new_phased in df_all_bouts_new.iterrows():
+                if bout_new_phased['start'] <= t_new < bout_new_phased['end']:
+                    bout_duration_new = bout_new_phased['end'] - bout_new_phased['start']
+                    if bout_duration_new > 0:
+                        relative_pos_new = (t_new - bout_new_phased['start']) / bout_duration_new
+                        phase_index_new = min(int(relative_pos_new * num_phases_new), num_phases_new - 1)
+                        
+                        if bout_new_phased['type'] == 'sleep':
+                            point_colors_phased_new[i_new] = sleep_phase_palette_new(phase_index_new)
+                        elif bout_new_phased['type'] == 'wake':
+                            point_colors_phased_new[i_new] = wake_phase_palette_new(phase_index_new)
+                    break 
+    
+    if len(pc1_scores_new_plots) > 0 and len(point_colors_phased_new) == len(pc1_scores_new_plots):
+        plt.scatter(pc1_scores_new_plots, pc2_scores_new_plots, c=point_colors_phased_new, s=5, alpha=0.6)
+
+    legend_elements_b_new = []
+    for phase_idx_new in range(num_phases_new):
+        legend_elements_b_new.append(Line2D([0], [0], marker='o', color='w', 
+                                         label=f'{phase_labels_new[phase_idx_new]} Sleep',
+                                         markerfacecolor=sleep_phase_palette_new(phase_idx_new), markersize=8))
+    for phase_idx_new in range(num_phases_new):
+        legend_elements_b_new.append(Line2D([0], [0], marker='o', color='w', 
+                                         label=f'{phase_labels_new[phase_idx_new]} Wake',
+                                         markerfacecolor=wake_phase_palette_new(phase_idx_new), markersize=8))
+
+    plt.xlabel(f'PC{comp1_idx + 1} ({explained_var_pc1_new:.1%} variance)')
+    plt.ylabel(f'PC{comp2_idx + 1} ({explained_var_pc2_new:.1%} variance)')
+    plt.title(f'{subject}: PC{comp1_idx + 1} vs PC{comp2_idx + 1} - Discrete Phased Coloring')
+    plt.grid(True, alpha=0.3)
+    plt.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    plt.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    if legend_elements_b_new:
+        plt.legend(handles=legend_elements_b_new, loc='best', title="Bout Phase:", ncol=2)
+    plot_b_filename_new = os.path.join(output_folder, f"{subject}_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_phased_scatter.png")
+    plt.savefig(plot_b_filename_new, dpi=300)
+    plt.show()
+
+    # --- End of New Plot Integration ---
+
+    # Calculate component thresholds
+    variance_thresholds = [0.5, 0.7, 0.9]
+    components_needed = {}
+    cumulative_var = np.cumsum(pca.explained_variance_ratio_)
+    for threshold_val in variance_thresholds: # Renamed threshold to threshold_val to avoid conflict
+        n_needed = np.argmax(cumulative_var >= threshold_val) + 1 if any(cumulative_var >= threshold_val) else n_components
+        components_needed[threshold_val] = n_needed
+        print(f"Components needed for {threshold_val*100:.0f}% variance: {n_needed}")
+    
+    # Return results dictionary (pca_result is n_samples x n_components)
+    return {
+        'pca': pca,
+        'pca_result': pca_result, 
+        'explained_variance_ratio': pca.explained_variance_ratio_,
+        'components_needed': components_needed,
+        'state_labels_used': state_labels_used,
+        'time_bins_used': time_bins_used
+    }
+
+def analyze_pc_smoothing(pca_results, df_neural_sleep, subject, output_folder, 
+                         window_sizes=[10, 20, 40, 60], comparison_window=10, pc_index_to_plot=0):
+    """
+    Analyze PC smoothing with different window sizes and create comparison plots
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca function
+    df_neural_sleep : pd.DataFrame
+        DataFrame containing sleep bout information with 'start_timestamp_s' and 'end_timestamp_s'
+    subject : str
+        Subject identifier for plot titles and filenames
+    output_folder : str
+        Directory to save plots
+    window_sizes : list, optional
+        List of window sizes to test for smoothing (default: [10, 20, 40, 60])
+    comparison_window : int, optional
+        Window size to use for the single comparison plot (default: 10)
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing smoothed PC data for each window size
+    """
+    
+    # Extract PC from pca_results
+    if 'pca_result' not in pca_results:
+        print("Error: pca_results not found. Please run the PCA analysis first.")
+        return None
+
+    pc_data = pca_results['pca_result'][:, pc_index_to_plot]  # First component
+    time_bins_pca = pca_results['time_bins_used']  # Use the correct key
+    state_labels_pca = pca_results['state_labels_used']  # Use the correct key
+
+    print(f"PC{pc_index_to_plot + 1} data length: {len(pc_data)}")
+    print(f"Time bins length: {len(time_bins_pca)}")
+    print(f"State labels length: {len(state_labels_pca)}")
+    
+    # Calculate session average for PC
+    session_avg_pc = np.mean(pc_data)
+
+    # Store results
+    smoothing_results = {
+        f'pc{pc_index_to_plot + 1}_original': pc_data,
+        'time_bins': time_bins_pca,
+        'state_labels': state_labels_pca,
+        'session_average': session_avg_pc,
+        'smoothed_data': {}
+    }
+    
+    # Create comparison plot with multiple window sizes
+    fig, axes = plt.subplots(len(window_sizes), 1, figsize=(15, 3*len(window_sizes)), sharex=True)
+    if len(window_sizes) == 1:
+        axes = [axes]
+    
+    for i, window_size in enumerate(window_sizes):
+        # Apply smoothing
+        pc_smoothed = moving_average_with_padding(pc_data, window_size, session_avg_pc)
+        smoothing_results['smoothed_data'][window_size] = pc_smoothed
+
+        print(f"Window {window_size}: PC{pc_index_to_plot + 1} original length: {len(pc_data)}, smoothed length: {len(pc_smoothed)}")
+
+        # Plot smoothed PC
+        axes[i].plot(time_bins_pca, pc_smoothed, 'k-', linewidth=1.5,
+                    label=f'PC{pc_index_to_plot + 1} (smoothed, window={window_size})')
+
+        # Add sleep periods as blue background
+        for _, row in df_neural_sleep.iterrows():
+            start_time = row['start_timestamp_s']
+            end_time = row['end_timestamp_s']
+            axes[i].axvspan(start_time, end_time, alpha=0.3, color='lightblue', 
+                           label='Sleep' if i == 0 and row.name == 0 else "")
+        
+        # Formatting
+        axes[i].set_ylabel(f'PC{pc_index_to_plot + 1} Score')
+        axes[i].set_title(f'PC{pc_index_to_plot + 1} over Time - Moving Average (Window: {window_size} bins)')
+        axes[i].grid(True, alpha=0.3)
+        axes[i].legend()
+        
+        # Print some statistics about the smoothing
+        original_std = np.std(pc_data)
+        smoothed_std = np.std(pc_smoothed)
+        print(f"Window {window_size}: Original STD={original_std:.3f}, Smoothed STD={smoothed_std:.3f}, "
+              f"Reduction={((original_std-smoothed_std)/original_std*100):.1f}%")
+    
+    # Finalize comparison plot
+    axes[-1].set_xlabel('Time (s)')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f"{subject}_pc{pc_index_to_plot + 1}_smoothed_comparison.png"), dpi=300)
+    plt.show()
+    
+    # Create single plot with specified window for comparison
+    if comparison_window in smoothing_results['smoothed_data']:
+        window_smoothed = smoothing_results['smoothed_data'][comparison_window]
+    else:
+        # If comparison_window not in the list, compute it
+        window_smoothed = moving_average_with_padding(pc_data, comparison_window, session_avg_pc)
+        smoothing_results['smoothed_data'][comparison_window] = window_smoothed
+    
+    plt.figure(figsize=(15, 6))
+    
+    # Plot both original and smoothed for comparison
+    plt.plot(time_bins_pca, pc_data, 'gray', alpha=0.5, linewidth=0.5, label='Original PC')
+    plt.plot(time_bins_pca, window_smoothed, 'black', linewidth=2,
+             label=f'Smoothed PC (window={comparison_window})')
+
+    # Add sleep periods
+    for _, row in df_neural_sleep.iterrows():
+        start_time = row['start_timestamp_s']
+        end_time = row['end_timestamp_s']
+        plt.axvspan(start_time, end_time, alpha=0.3, color='lightblue', 
+                   label='Sleep' if row.name == 0 else "")
+    
+    plt.xlabel('Time (s)')
+    plt.ylabel(f'PC{pc_index_to_plot + 1} Score')
+    plt.title(f'{subject}: PC{pc_index_to_plot + 1} Neural Trajectory Over Time (Smoothed, Window={comparison_window})')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f"{subject}_pc{pc_index_to_plot + 1}_window{comparison_window}_smoothed.png"), dpi=300)
+    plt.show()
+    
+    return smoothing_results
+
+def plot_pc_spectrogram(pc_data, time_bins_pca, df_neural_sleep, subject_name, output_dir, 
+                         nperseg_pc=50, noverlap_ratio=0.5, show_plots=True, save_plots=True, pc_index_to_plot=0):
+    """
+    Computes and plots the spectrogram of PC data, highlighting sleep periods and delta power.
+
+    Args:
+        pc_data (np.array): Array of PC scores.
+        time_bins_pca (np.array): Array of time bins corresponding to pc_data.
+        df_neural_sleep (pd.DataFrame): DataFrame with 'start_timestamp_s' and 'end_timestamp_s'
+                                        for sleep bouts.
+        subject_name (str): Subject identifier for titles and filenames.
+        output_dir (str): Directory to save the plot.
+        nperseg_pc (int): Window length for the spectrogram in samples.
+        noverlap_ratio (float): Ratio of overlap to nperseg_pc for the spectrogram.
+        show_plots (bool): Whether to display the plot.
+        save_plots (bool): Whether to save the plot.
+    """
+    if pc_data is None or time_bins_pca is None or df_neural_sleep is None:
+        print("Error: pc_data, time_bins_pca, or df_neural_sleep is None. Skipping PC spectrogram.")
+        return
+
+    if len(pc_data) == 0 or len(time_bins_pca) == 0:
+        print("Error: pc_data or time_bins_pca is empty. Skipping PC spectrogram.")
+        return
+
+    if len(time_bins_pca) < 2:
+        print("Error: time_bins_pca must have at least 2 elements to calculate sampling frequency. Skipping PC spectrogram.")
+        return
+
+    # Calculate sampling frequency
+    fs = 1 / (time_bins_pca[1] - time_bins_pca[0])
+    print(f"PC Spectrogram: Sampling frequency (fs): {fs:.2f} Hz")
+
+    # Define spectrogram parameters
+    noverlap_pc = int(nperseg_pc * noverlap_ratio)
+    print(f"PC Spectrogram parameters: nperseg={nperseg_pc} ({(nperseg_pc/fs):.1f}s), noverlap={noverlap_pc} ({(noverlap_pc/fs):.1f}s)")
+
+    if len(pc_data) < nperseg_pc:
+        print(f"Error: pc_data length ({len(pc_data)}) is less than nperseg ({nperseg_pc}). Skipping PC spectrogram.")
+        return
+
+    # Compute spectrogram for PC1
+    try:
+        frequencies, times_spec, Sxx_pc = signal.spectrogram(
+            pc_data,
+            fs=fs,
+            window='hamming',
+            nperseg=nperseg_pc,
+            noverlap=noverlap_pc,
+            scaling='density', # Power spectral density
+            detrend='constant'
+        )
+    except ValueError as e:
+        print(f"Error computing spectrogram: {e}. Skipping PC spectrogram.")
+        return
+
+    # Convert power to dB
+    Sxx_pc_db = 10 * np.log10(Sxx_pc + 1e-10) # Add epsilon to avoid log(0)
+
+    # Plotting
+    fig, axs = plt.subplots(2, 1, figsize=(15, 10), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+
+    # 1. Plot Spectrogram
+    vmin_spec = np.percentile(Sxx_pc_db, 5)
+    vmax_spec = np.percentile(Sxx_pc_db, 95)
+
+    times_spec_aligned = times_spec + time_bins_pca[0]
+
+    im = axs[0].pcolormesh(times_spec_aligned, frequencies, Sxx_pc_db, shading='gouraud', cmap='viridis', vmin=vmin_spec, vmax=vmax_spec)
+    # fig.colorbar(im, ax=axs[0], label='Power/Frequency (dB/Hz)') # Uncomment if colorbar is desired
+    axs[0].set_ylabel('Frequency (Hz)')
+    axs[0].set_title(f'{subject_name}: PC{pc_index_to_plot + 1} Spectrogram')
+    axs[0].set_ylim(0, fs / 2)
+
+    # Overlay sleep periods on spectrogram
+    for _, bout in df_neural_sleep.iterrows():
+        start_time = bout['start_timestamp_s']
+        end_time = bout['end_timestamp_s']
+        axs[0].axvspan(start_time, end_time, alpha=0.2, color='cyan', ec='none')
+
+    # 2. Plot Power in Delta Band (1-4 Hz)
+    delta_band_mask = (frequencies >= 1) & (frequencies <= 4)
+    if np.any(delta_band_mask):
+        delta_power_pc = np.mean(Sxx_pc_db[delta_band_mask, :], axis=0)
+        axs[1].plot(times_spec_aligned, delta_power_pc, color='blue', linewidth=1.5, label='Delta Power (1-4 Hz)')
+        axs[1].set_ylabel('Avg. Power (dB)')
+        
+        # Overlay sleep periods on delta power plot
+        # Add legend only once for sleep
+        sleep_label_added = False
+        for _, bout in df_neural_sleep.iterrows():
+            start_time = bout['start_timestamp_s']
+            end_time = bout['end_timestamp_s']
+            current_label = 'Sleep' if not sleep_label_added else ""
+            axs[1].axvspan(start_time, end_time, alpha=0.2, color='cyan', ec='none', label=current_label)
+            if not sleep_label_added:
+                sleep_label_added = True
+        
+        handles, labels = axs[1].get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        axs[1].legend(by_label.values(), by_label.keys())
+    else:
+        axs[1].text(0.5, 0.5, 'Delta band (1-4 Hz) not resolved with current settings.',
+                    horizontalalignment='center', verticalalignment='center', transform=axs[1].transAxes)
+
+    axs[1].set_xlabel('Time (s)')
+    if len(time_bins_pca) > 0:
+        axs[1].set_xlim(time_bins_pca[0], time_bins_pca[-1])
+    axs[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if save_plots:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
+        save_path = os.path.join(output_dir, f"{subject_name}_pc{pc_index_to_plot + 1}_spectrogram.png")
+        plt.savefig(save_path, dpi=300)
+        print(f"PC{pc_index_to_plot + 1} spectrogram saved to {save_path}")
+
+    if show_plots:
+        plt.show()
+    else:
+        plt.close(fig)
