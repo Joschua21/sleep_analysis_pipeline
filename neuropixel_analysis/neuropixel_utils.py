@@ -3135,3 +3135,237 @@ def plot_pc_spectrogram(pc_data, time_bins_pca, df_neural_sleep, subject_name, o
         plt.show()
     else:
         plt.close(fig)
+
+
+def analyze_pca_across_bin_sizes(
+    spike_recordings,
+    cluster_quality_maps,
+    neural_sleep_df,
+    subject,
+    output_folder,
+    bin_sizes_ms,
+    probes_to_use=['probe0', 'probe1'],
+    n_components_pca=50,
+    components_to_plot_scatter=(0, 1),
+    max_components_for_variance_plot=50,
+    cluster_qualities_to_include=['good', 'mua']
+):
+    """
+    Performs PCA for different temporal bin sizes and plots results.
+
+    Parameters:
+    -----------
+    spike_recordings : dict
+        Raw spike data loaded by pinkrigs_tools load_data.
+        Example: spike_recordings['probe0'][0]['spikes'] and spike_recordings['probe0'][0]['clusters']
+    cluster_quality_maps : dict
+        A dictionary mapping probe names to cluster quality arrays.
+        Example: {'probe0': quality_array_probe0, 'probe1': quality_array_probe1}
+                 where quality_array is from bombcell_sort_units and corresponds to
+                 the order of clusters in spike_recordings[probe][0]['clusters']['cluster_id'].
+    neural_sleep_df : pd.DataFrame
+        DataFrame with sleep bout information ('start_timestamp_s', 'end_timestamp_s').
+    subject : str
+        Subject identifier.
+    output_folder : str
+        Directory to save plots.
+    bin_sizes_ms : list
+        List of bin sizes in milliseconds (e.g., [10, 50, 100]).
+    probes_to_use : list, optional
+        List of probe names to include (e.g., ['probe0', 'probe1']).
+    n_components_pca : int, optional
+        Number of PCA components to compute.
+    components_to_plot_scatter : tuple, optional
+        PC indices for the scatter plot (0-indexed).
+    max_components_for_variance_plot : int, optional
+        Maximum number of components for the cumulative variance plot.
+    cluster_qualities_to_include : list, optional
+        List of cluster quality labels to include.
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Created output directory: {output_folder}")
+
+    all_cumulative_variances = {}
+    pc1_idx, pc2_idx = components_to_plot_scatter
+
+    for bin_size_ms in bin_sizes_ms:
+        bin_size_s = bin_size_ms / 1000.0
+        print(f"\nProcessing bin size: {bin_size_ms} ms ({bin_size_s} s)")
+
+        combined_counts_for_bin = []
+        time_bins_current_binning = None # Will be set by the first probe
+
+        for probe_idx, probe_name in enumerate(probes_to_use):
+            # Check if probe exists and has data using .empty instead of boolean evaluation
+            if probe_name not in spike_recordings or spike_recordings[probe_name].empty:
+                print(f"Spike data for {probe_name} not found. Skipping.")
+                continue
+            if probe_name not in cluster_quality_maps:
+                print(f"Cluster quality for {probe_name} not found. Skipping.")
+                continue
+
+            probe_spikes_data = spike_recordings[probe_name].iloc[0]['spikes']
+            probe_clusters_data = spike_recordings[probe_name].iloc[0]['clusters']
+            probe_quality_labels = cluster_quality_maps[probe_name]
+
+            # Fixed: Use 'cluster_id' instead of 'ids'
+            all_cluster_ids_probe = probe_clusters_data['cluster_id']
+            
+            # Ensure quality labels array matches the number of cluster IDs
+            if len(all_cluster_ids_probe) != len(probe_quality_labels):
+                print(f"Warning: Mismatch in cluster ID count ({len(all_cluster_ids_probe)}) and quality labels ({len(probe_quality_labels)}) for {probe_name}. Skipping probe.")
+                continue
+
+            # Create mask for selecting clusters of desired quality
+            quality_mask = np.isin(probe_quality_labels, cluster_qualities_to_include)
+            selected_cluster_ids = all_cluster_ids_probe[quality_mask]
+
+            if len(selected_cluster_ids) == 0:
+                print(f"No clusters of desired quality found for {probe_name}. Skipping.")
+                continue
+
+            # Filter spikes: only include spikes from selected clusters
+            spike_times_all = probe_spikes_data['times']
+            # Fixed: Use 'clusters' instead of 'clusters' (this was already correct)
+            spike_clusters_all = probe_spikes_data['clusters']
+            
+            # Mask for spikes belonging to selected clusters
+            spike_selection_mask = np.isin(spike_clusters_all, selected_cluster_ids)
+            
+            filtered_spike_times = spike_times_all[spike_selection_mask]
+            filtered_spike_clusters = spike_clusters_all[spike_selection_mask]
+
+            if len(filtered_spike_times) == 0:
+                print(f"No spikes found from selected clusters for {probe_name}. Skipping.")
+                continue
+
+            # Bin the filtered spikes
+            # bincount2D expects x (times), y (clusters)
+            # ybin=0 means aggregate by unique values in y (filtered_spike_clusters)
+            counts_probe, tb_probe, cids_probe = bincount2D(
+                x=filtered_spike_times,
+                y=filtered_spike_clusters,
+                xbin=bin_size_s,
+                ybin=0, # Use unique cluster IDs present in filtered_spike_clusters
+                xlim=[np.min(filtered_spike_times), np.max(filtered_spike_times)]
+            )
+            
+            if counts_probe is None or counts_probe.shape[0] == 0 or counts_probe.shape[1] == 0:
+                print(f"Binning resulted in empty counts for {probe_name}. Skipping.")
+                continue
+
+            print(f"  {probe_name}: Binned counts shape: {counts_probe.shape} (clusters x timebins)")
+            combined_counts_for_bin.append(counts_probe)
+
+            if time_bins_current_binning is None: # Set time bins from the first processed probe
+                time_bins_current_binning = tb_probe
+            elif not np.array_equal(time_bins_current_binning, tb_probe):
+                # This case should ideally not happen if recordings are aligned and binning is consistent
+                # For simplicity, we'll truncate to the shortest if they differ.
+                print(f"  Warning: Time bins differ between probes for bin size {bin_size_ms}ms. Truncating.")
+                min_len = min(len(time_bins_current_binning), len(tb_probe))
+                time_bins_current_binning = time_bins_current_binning[:min_len]
+                # Adjust existing combined_counts if this is not the first probe
+                for i in range(len(combined_counts_for_bin)-1):
+                    combined_counts_for_bin[i] = combined_counts_for_bin[i][:, :min_len]
+                combined_counts_for_bin[-1] = combined_counts_for_bin[-1][:, :min_len]
+
+
+        if not combined_counts_for_bin or time_bins_current_binning is None:
+            print(f"No data to process for bin size {bin_size_ms} ms. Skipping PCA.")
+            continue
+        
+        # Ensure all count matrices have the same number of time bins
+        min_timepoints = min(arr.shape[1] for arr in combined_counts_for_bin)
+        combined_matrix_list = [arr[:, :min_timepoints] for arr in combined_counts_for_bin]
+        time_bins_current_binning = time_bins_current_binning[:min_timepoints]
+
+        combined_matrix = np.vstack(combined_matrix_list).astype(np.float32) # (total_neurons x timepoints)
+        print(f"  Combined matrix shape for bin size {bin_size_ms}ms: {combined_matrix.shape}")
+
+        if combined_matrix.shape[0] == 0 or combined_matrix.shape[1] == 0:
+            print(f"Combined matrix is empty for bin size {bin_size_ms}ms. Skipping PCA.")
+            continue
+
+        # Prepare state labels for current time bins
+        state_labels_current_binning = np.zeros(len(time_bins_current_binning), dtype=int) # 0 for wake
+        if not neural_sleep_df.empty:
+            for _, row in neural_sleep_df.iterrows():
+                start_idx = np.searchsorted(time_bins_current_binning, row['start_timestamp_s'], side='left')
+                end_idx = np.searchsorted(time_bins_current_binning, row['end_timestamp_s'], side='right')
+                state_labels_current_binning[start_idx:end_idx] = 1 # 1 for sleep
+        
+        # PCA
+        X = combined_matrix.T # (timepoints x neurons)
+        if X.shape[0] < n_components_pca or X.shape[1] < n_components_pca :
+            print(f"  Data shape {X.shape} too small for {n_components_pca} PCA components. Skipping bin size {bin_size_ms}ms.")
+            continue
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        current_n_components = min(n_components_pca, X_scaled.shape[0], X_scaled.shape[1])
+        if current_n_components < 2: # Need at least 2 components for scatter plot
+             print(f"  Not enough features/samples ({current_n_components}) for PCA. Skipping bin size {bin_size_ms}ms.")
+             continue
+
+        pca = PCA(n_components=current_n_components)
+        pca_result = pca.fit_transform(X_scaled) # (timepoints x components)
+        
+        # Store cumulative variance
+        all_cumulative_variances[bin_size_ms] = np.cumsum(pca.explained_variance_ratio_)
+
+        # Plot PC1 vs PC2 Scatter
+        fig_scatter, ax_scatter = plt.subplots(figsize=(10, 8))
+        wake_mask_scatter = state_labels_current_binning == 0
+        sleep_mask_scatter = state_labels_current_binning == 1
+
+        ax_scatter.scatter(pca_result[wake_mask_scatter, pc1_idx], pca_result[wake_mask_scatter, pc2_idx],
+                           c='orange', alpha=0.5, s=10, label='Wake')
+        ax_scatter.scatter(pca_result[sleep_mask_scatter, pc1_idx], pca_result[sleep_mask_scatter, pc2_idx],
+                           c='blue', alpha=0.5, s=10, label='Sleep')
+        
+        ax_scatter.set_xlabel(f'PC{pc1_idx + 1} ({pca.explained_variance_ratio_[pc1_idx]:.1%} variance)')
+        ax_scatter.set_ylabel(f'PC{pc2_idx + 1} ({pca.explained_variance_ratio_[pc2_idx]:.1%} variance)')
+        ax_scatter.set_title(f'{subject}: PC{pc1_idx+1} vs PC{pc2_idx+1} (Bin Size: {bin_size_ms} ms)')
+        ax_scatter.legend()
+        ax_scatter.grid(True, alpha=0.3)
+        ax_scatter.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+        ax_scatter.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+        
+        scatter_filename = os.path.join(output_folder, f"{subject}_pca_scatter_bin_{bin_size_ms}ms.png")
+        plt.savefig(scatter_filename, dpi=300)
+        plt.close(fig_scatter)
+        print(f"  Saved PC scatter plot to {scatter_filename}")
+
+    # Plot Cumulative Explained Variance
+    if not all_cumulative_variances:
+        print("No PCA results to plot for cumulative variance.")
+        return
+
+    fig_variance, ax_variance = plt.subplots(figsize=(12, 8))
+    num_components_to_show = min(max_components_for_variance_plot, n_components_pca)
+
+    for bin_size_ms, cum_var in all_cumulative_variances.items():
+        components_axis = np.arange(1, min(len(cum_var), num_components_to_show) + 1)
+        ax_variance.plot(components_axis, cum_var[:min(len(cum_var), num_components_to_show)], 
+                         marker='o', linestyle='-', markersize=4, label=f'{bin_size_ms} ms bin')
+
+    ax_variance.set_xlabel('Number of Principal Components')
+    ax_variance.set_ylabel('Cumulative Explained Variance')
+    ax_variance.set_title(f'{subject}: PCA Cumulative Explained Variance by Bin Size')
+    ax_variance.grid(True, alpha=0.5)
+    ax_variance.legend(title="Bin Size")
+    ax_variance.set_xticks(np.arange(0, num_components_to_show + 1, 5 if num_components_to_show > 20 else 1))
+    ax_variance.set_yticks(np.arange(0, 1.1, 0.1))
+    ax_variance.set_ylim(0, 1.05)
+    ax_variance.set_xlim(0, num_components_to_show + 1)
+
+    variance_plot_filename = os.path.join(output_folder, f"{subject}_pca_cumulative_variance_by_binsize.png")
+    plt.savefig(variance_plot_filename, dpi=300)
+    plt.show()
+    plt.close(fig_variance)
+    print(f"Saved cumulative variance plot to {variance_plot_filename}")
+
+    print("\nFinished PCA analysis across bin sizes.")
