@@ -2518,9 +2518,9 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     
     # Plot the selected components
     comp1_idx, comp2_idx = components_to_plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    # Plot the selected components - CORRECTED COLORS
+    # === PLOT 1: PC1 vs PC2 Scatter ===
+    fig1, ax1 = plt.subplots(figsize=(10, 8))
     ax1.scatter(pca_result[wake_mask_orig, comp1_idx], pca_result[wake_mask_orig, comp2_idx], 
               c='orange', alpha=0.5, s=5, label='Wake') # Wake is orange
     ax1.scatter(pca_result[sleep_mask_orig, comp1_idx], pca_result[sleep_mask_orig, comp2_idx], 
@@ -2533,7 +2533,12 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     ax1.axhline(0, color='gray', linestyle='--', linewidth=0.7)
     ax1.axvline(0, color='gray', linestyle='--', linewidth=0.7)
     
-    # Plot explained variance
+    scatter_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_scatter_states.png")
+    plt.savefig(scatter_filename, dpi=300)
+    plt.show()
+    
+    # === PLOT 2: Explained Variance ===
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
     ax2.plot(range(1, n_components + 1), pca.explained_variance_ratio_, 'o-', color='blue')
     ax2.plot(range(1, n_components + 1), np.cumsum(pca.explained_variance_ratio_), 'o-', color='red')
     ax2.set_xlabel('Principal Component')
@@ -2543,26 +2548,43 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     ax2.grid(True)
     ax2.legend(['Individual', 'Cumulative', '50% Threshold'])
     
-    plt.tight_layout()
-    original_scatter_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_scatter_states.png")
-    plt.savefig(original_scatter_filename, dpi=300)
+    variance_filename = os.path.join(output_folder, f"{subject}_pca_explained_variance.png")
+    plt.savefig(variance_filename, dpi=300)
     plt.show()
     
-    # Plot PC (specified by pc_index_to_plot) over time with sleep bouts highlighted
-    plt.figure(figsize=(15, 6))
-    plt.plot(time_bins_used, pca_result[:, pc_index_to_plot], 'k-', linewidth=0.5)
+    # === PLOT 3: PC over Time ===
+    fig3, ax3 = plt.subplots(figsize=(14, 6))
+    ax3.plot(time_bins_used, pca_result[:, pc_index_to_plot], 'k-', linewidth=0.5)
     
-    y_min_ts, y_max_ts = plt.ylim() # Get y-limits for axvspan
+    y_min_ts, y_max_ts = ax3.get_ylim() # Get y-limits for axvspan
     for _, row in neural_sleep_df.iterrows():
-        plt.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+        ax3.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
                    ymin=0, ymax=1, color='blue', alpha=0.2) # ymin/ymax relative to axes
 
-    plt.title(f"{subject}: PC{pc_index_to_plot +1} over Recording Time")
-    plt.xlabel('Time (s)')
-    plt.ylabel(f'PC{pc_index_to_plot +1} Score')
-    plt.tight_layout()
-    timeseries_plot_filename = os.path.join(output_folder, f"{subject}_pc{pc_index_to_plot +1}_timeseries.png")
-    plt.savefig(timeseries_plot_filename, dpi=300)
+    ax3.set_title(f"{subject}: PC{pc_index_to_plot +1} over Recording Time")
+    ax3.set_xlabel('Time (s)')
+    ax3.set_ylabel(f'PC{pc_index_to_plot +1} Score')
+    
+    timeseries_filename = os.path.join(output_folder, f"{subject}_pca_pc{pc_index_to_plot+1}_timeseries.png")
+    plt.savefig(timeseries_filename, dpi=300)
+    plt.show()
+    
+    # === PLOT 4: Hexbin Density Plot ===
+    fig4, ax4 = plt.subplots(figsize=(10, 8))
+    pc1 = pca_result[:, comp1_idx]
+    pc2 = pca_result[:, comp2_idx]
+    
+    hb = ax4.hexbin(pc1, pc2, gridsize=30, cmap='viridis', alpha=0.7)
+    ax4.set_xlabel(f'PC{comp1_idx+1}')
+    ax4.set_ylabel(f'PC{comp2_idx+1}')
+    ax4.set_title(f'PC{comp1_idx+1} vs PC{comp2_idx+1} Density')
+    plt.colorbar(hb, ax=ax4, label='Count')
+    ax4.grid(True, alpha=0.3)
+    ax4.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    ax4.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    density_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_density.png")
+    plt.savefig(density_filename, dpi=300)
     plt.show()
     
     # --- Integration of New Plots ---
@@ -2611,7 +2633,7 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     custom_oranges_colors_new = [(0, "#a63603"), (0.5, "#fd8d3c"), (1, "#feedde")]
     custom_oranges_cmap_new = LinearSegmentedColormap.from_list("custom_oranges_new", custom_oranges_colors_new)
 
-    # --- Plot A: PC1 vs PC2 Density Plot (State-Specific Colors, White Background) ---
+    # === PLOT 5: PC1 vs PC2 State-Specific Density Plot ===
     plt.figure(figsize=(10, 8))
     if len(pc1_wake_density_new) > 1 and len(pc2_wake_density_new) > 1:
         sns.kdeplot(x=pc1_wake_density_new, y=pc2_wake_density_new, cmap=custom_oranges_cmap_new, fill=True, thresh=0.05, alpha=0.75, n_levels=100, label="Wake Density")
@@ -2629,7 +2651,7 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     plt.savefig(plot_a_filename_new, dpi=300)
     plt.show()
 
-    # --- Plot B: PC1 vs PC2 Scatter with Discrete Phased Coloring ---
+    # === PLOT 6: PC1 vs PC2 Scatter with Discrete Phased Coloring ===
     plt.figure(figsize=(12, 10))
     
     num_phases_new = 3 
@@ -2952,240 +2974,6 @@ def plot_pc_spectrogram(pc_data, time_bins_pca, df_neural_sleep, subject_name, o
         plt.close(fig)
 
 
-def analyze_pca_across_bin_sizes(
-    spike_recordings,
-    cluster_quality_maps,
-    neural_sleep_df,
-    subject,
-    output_folder,
-    bin_sizes_ms,
-    probes_to_use=['probe0', 'probe1'],
-    n_components_pca=50,
-    components_to_plot_scatter=(0, 1),
-    max_components_for_variance_plot=50,
-    cluster_qualities_to_include=['good', 'mua']
-):
-    """
-    Performs PCA for different temporal bin sizes and plots results.
-
-    Parameters:
-    -----------
-    spike_recordings : dict
-        Raw spike data loaded by pinkrigs_tools load_data.
-        Example: spike_recordings['probe0'][0]['spikes'] and spike_recordings['probe0'][0]['clusters']
-    cluster_quality_maps : dict
-        A dictionary mapping probe names to cluster quality arrays.
-        Example: {'probe0': quality_array_probe0, 'probe1': quality_array_probe1}
-                 where quality_array is from bombcell_sort_units and corresponds to
-                 the order of clusters in spike_recordings[probe][0]['clusters']['cluster_id'].
-    neural_sleep_df : pd.DataFrame
-        DataFrame with sleep bout information ('start_timestamp_s', 'end_timestamp_s').
-    subject : str
-        Subject identifier.
-    output_folder : str
-        Directory to save plots.
-    bin_sizes_ms : list
-        List of bin sizes in milliseconds (e.g., [10, 50, 100]).
-    probes_to_use : list, optional
-        List of probe names to include (e.g., ['probe0', 'probe1']).
-    n_components_pca : int, optional
-        Number of PCA components to compute.
-    components_to_plot_scatter : tuple, optional
-        PC indices for the scatter plot (0-indexed).
-    max_components_for_variance_plot : int, optional
-        Maximum number of components for the cumulative variance plot.
-    cluster_qualities_to_include : list, optional
-        List of cluster quality labels to include.
-    """
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-        print(f"Created output directory: {output_folder}")
-
-    all_cumulative_variances = {}
-    pc1_idx, pc2_idx = components_to_plot_scatter
-
-    for bin_size_ms in bin_sizes_ms:
-        bin_size_s = bin_size_ms / 1000.0
-        print(f"\nProcessing bin size: {bin_size_ms} ms ({bin_size_s} s)")
-
-        combined_counts_for_bin = []
-        time_bins_current_binning = None # Will be set by the first probe
-
-        for probe_idx, probe_name in enumerate(probes_to_use):
-            # Check if probe exists and has data using .empty instead of boolean evaluation
-            if probe_name not in spike_recordings or spike_recordings[probe_name].empty:
-                print(f"Spike data for {probe_name} not found. Skipping.")
-                continue
-            if probe_name not in cluster_quality_maps:
-                print(f"Cluster quality for {probe_name} not found. Skipping.")
-                continue
-
-            probe_spikes_data = spike_recordings[probe_name].iloc[0]['spikes']
-            probe_clusters_data = spike_recordings[probe_name].iloc[0]['clusters']
-            probe_quality_labels = cluster_quality_maps[probe_name]
-
-            # Fixed: Use 'cluster_id' instead of 'ids'
-            all_cluster_ids_probe = probe_clusters_data['cluster_id']
-            
-            # Ensure quality labels array matches the number of cluster IDs
-            if len(all_cluster_ids_probe) != len(probe_quality_labels):
-                print(f"Warning: Mismatch in cluster ID count ({len(all_cluster_ids_probe)}) and quality labels ({len(probe_quality_labels)}) for {probe_name}. Skipping probe.")
-                continue
-
-            # Create mask for selecting clusters of desired quality
-            quality_mask = np.isin(probe_quality_labels, cluster_qualities_to_include)
-            selected_cluster_ids = all_cluster_ids_probe[quality_mask]
-
-            if len(selected_cluster_ids) == 0:
-                print(f"No clusters of desired quality found for {probe_name}. Skipping.")
-                continue
-
-            # Filter spikes: only include spikes from selected clusters
-            spike_times_all = probe_spikes_data['times']
-            # Fixed: Use 'clusters' instead of 'clusters' (this was already correct)
-            spike_clusters_all = probe_spikes_data['clusters']
-            
-            # Mask for spikes belonging to selected clusters
-            spike_selection_mask = np.isin(spike_clusters_all, selected_cluster_ids)
-            
-            filtered_spike_times = spike_times_all[spike_selection_mask]
-            filtered_spike_clusters = spike_clusters_all[spike_selection_mask]
-
-            if len(filtered_spike_times) == 0:
-                print(f"No spikes found from selected clusters for {probe_name}. Skipping.")
-                continue
-
-            # Bin the filtered spikes
-            # bincount2D expects x (times), y (clusters)
-            # ybin=0 means aggregate by unique values in y (filtered_spike_clusters)
-            counts_probe, tb_probe, cids_probe = bincount2D(
-                x=filtered_spike_times,
-                y=filtered_spike_clusters,
-                xbin=bin_size_s,
-                ybin=0, # Use unique cluster IDs present in filtered_spike_clusters
-                xlim=[np.min(filtered_spike_times), np.max(filtered_spike_times)]
-            )
-            
-            if counts_probe is None or counts_probe.shape[0] == 0 or counts_probe.shape[1] == 0:
-                print(f"Binning resulted in empty counts for {probe_name}. Skipping.")
-                continue
-
-            print(f"  {probe_name}: Binned counts shape: {counts_probe.shape} (clusters x timebins)")
-            combined_counts_for_bin.append(counts_probe)
-
-            if time_bins_current_binning is None: # Set time bins from the first processed probe
-                time_bins_current_binning = tb_probe
-            elif not np.array_equal(time_bins_current_binning, tb_probe):
-                # This case should ideally not happen if recordings are aligned and binning is consistent
-                # For simplicity, we'll truncate to the shortest if they differ.
-                print(f"  Warning: Time bins differ between probes for bin size {bin_size_ms}ms. Truncating.")
-                min_len = min(len(time_bins_current_binning), len(tb_probe))
-                time_bins_current_binning = time_bins_current_binning[:min_len]
-                # Adjust existing combined_counts if this is not the first probe
-                for i in range(len(combined_counts_for_bin)-1):
-                    combined_counts_for_bin[i] = combined_counts_for_bin[i][:, :min_len]
-                combined_counts_for_bin[-1] = combined_counts_for_bin[-1][:, :min_len]
-
-
-        if not combined_counts_for_bin or time_bins_current_binning is None:
-            print(f"No data to process for bin size {bin_size_ms} ms. Skipping PCA.")
-            continue
-        
-        # Ensure all count matrices have the same number of time bins
-        min_timepoints = min(arr.shape[1] for arr in combined_counts_for_bin)
-        combined_matrix_list = [arr[:, :min_timepoints] for arr in combined_counts_for_bin]
-        time_bins_current_binning = time_bins_current_binning[:min_timepoints]
-
-        combined_matrix = np.vstack(combined_matrix_list).astype(np.float32) # (total_neurons x timepoints)
-        print(f"  Combined matrix shape for bin size {bin_size_ms}ms: {combined_matrix.shape}")
-
-        if combined_matrix.shape[0] == 0 or combined_matrix.shape[1] == 0:
-            print(f"Combined matrix is empty for bin size {bin_size_ms}ms. Skipping PCA.")
-            continue
-
-        # Prepare state labels for current time bins
-        state_labels_current_binning = np.zeros(len(time_bins_current_binning), dtype=int) # 0 for wake
-        if not neural_sleep_df.empty:
-            for _, row in neural_sleep_df.iterrows():
-                start_idx = np.searchsorted(time_bins_current_binning, row['start_timestamp_s'], side='left')
-                end_idx = np.searchsorted(time_bins_current_binning, row['end_timestamp_s'], side='right')
-                state_labels_current_binning[start_idx:end_idx] = 1 # 1 for sleep
-        
-        # PCA
-        X = combined_matrix.T # (timepoints x neurons)
-        if X.shape[0] < n_components_pca or X.shape[1] < n_components_pca :
-            print(f"  Data shape {X.shape} too small for {n_components_pca} PCA components. Skipping bin size {bin_size_ms}ms.")
-            continue
-
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        current_n_components = min(n_components_pca, X_scaled.shape[0], X_scaled.shape[1])
-        if current_n_components < 2: # Need at least 2 components for scatter plot
-             print(f"  Not enough features/samples ({current_n_components}) for PCA. Skipping bin size {bin_size_ms}ms.")
-             continue
-
-        pca = PCA(n_components=current_n_components)
-        pca_result = pca.fit_transform(X_scaled) # (timepoints x components)
-        
-        # Store cumulative variance
-        all_cumulative_variances[bin_size_ms] = np.cumsum(pca.explained_variance_ratio_)
-
-        # Plot PC1 vs PC2 Scatter
-        fig_scatter, ax_scatter = plt.subplots(figsize=(10, 8))
-        wake_mask_scatter = state_labels_current_binning == 0
-        sleep_mask_scatter = state_labels_current_binning == 1
-
-        ax_scatter.scatter(pca_result[wake_mask_scatter, pc1_idx], pca_result[wake_mask_scatter, pc2_idx],
-                           c='orange', alpha=0.5, s=10, label='Wake')
-        ax_scatter.scatter(pca_result[sleep_mask_scatter, pc1_idx], pca_result[sleep_mask_scatter, pc2_idx],
-                           c='blue', alpha=0.5, s=10, label='Sleep')
-        
-        ax_scatter.set_xlabel(f'PC{pc1_idx + 1} ({pca.explained_variance_ratio_[pc1_idx]:.1%} variance)')
-        ax_scatter.set_ylabel(f'PC{pc2_idx + 1} ({pca.explained_variance_ratio_[pc2_idx]:.1%} variance)')
-        ax_scatter.set_title(f'{subject}: PC{pc1_idx+1} vs PC{pc2_idx+1} (Bin Size: {bin_size_ms} ms)')
-        ax_scatter.legend()
-        ax_scatter.grid(True, alpha=0.3)
-        ax_scatter.axhline(0, color='gray', linestyle='--', linewidth=0.7)
-        ax_scatter.axvline(0, color='gray', linestyle='--', linewidth=0.7)
-        
-        scatter_filename = os.path.join(output_folder, f"{subject}_pca_scatter_bin_{bin_size_ms}ms.png")
-        plt.savefig(scatter_filename, dpi=300)
-        plt.close(fig_scatter)
-        print(f"  Saved PC scatter plot to {scatter_filename}")
-
-    # Plot Cumulative Explained Variance
-    if not all_cumulative_variances:
-        print("No PCA results to plot for cumulative variance.")
-        return
-
-    fig_variance, ax_variance = plt.subplots(figsize=(12, 8))
-    num_components_to_show = min(max_components_for_variance_plot, n_components_pca)
-
-    for bin_size_ms, cum_var in all_cumulative_variances.items():
-        components_axis = np.arange(1, min(len(cum_var), num_components_to_show) + 1)
-        ax_variance.plot(components_axis, cum_var[:min(len(cum_var), num_components_to_show)], 
-                         marker='o', linestyle='-', markersize=4, label=f'{bin_size_ms} ms bin')
-
-    ax_variance.set_xlabel('Number of Principal Components')
-    ax_variance.set_ylabel('Cumulative Explained Variance')
-    ax_variance.set_title(f'{subject}: PCA Cumulative Explained Variance by Bin Size')
-    ax_variance.grid(True, alpha=0.5)
-    ax_variance.legend(title="Bin Size")
-    ax_variance.set_xticks(np.arange(0, num_components_to_show + 1, 5 if num_components_to_show > 20 else 1))
-    ax_variance.set_yticks(np.arange(0, 1.1, 0.1))
-    ax_variance.set_ylim(0, 1.05)
-    ax_variance.set_xlim(0, num_components_to_show + 1)
-
-    variance_plot_filename = os.path.join(output_folder, f"{subject}_pca_cumulative_variance_by_binsize.png")
-    plt.savefig(variance_plot_filename, dpi=300)
-    plt.show()
-    plt.close(fig_variance)
-    print(f"Saved cumulative variance plot to {variance_plot_filename}")
-
-    print("\nFinished PCA analysis across bin sizes.")
-
-
 
 def plot_pca_with_behavioral_features(pca_results, neural_sleep_df, dlc_folder, smoothed_results, 
                                     subject, output_folder, components_to_plot=(0, 1), 
@@ -3489,3 +3277,810 @@ def plot_pca_with_behavioral_features(pca_results, neural_sleep_df, dlc_folder, 
         print(f"Saved plot to: {filepath}")
         
     return fig
+def analyze_pca_across_bin_sizes(
+    spike_recordings,
+    cluster_quality_maps,
+    neural_sleep_df,
+    subject,
+    output_folder,
+    bin_sizes_ms,
+    probes_to_use=['probe0', 'probe1'],
+    n_components_pca=50,
+    components_to_plot_scatter=(0, 1),
+    max_components_for_variance_plot=50,
+    cluster_qualities_to_include=['good', 'mua']
+):
+    """
+    Performs PCA for different temporal bin sizes and plots results with enhanced visualization.
+
+    Parameters:
+    -----------
+    spike_recordings : dict
+        Raw spike data loaded by pinkrigs_tools load_data.
+        Example: spike_recordings['probe0'][0]['spikes'] and spike_recordings['probe0'][0]['clusters']
+    cluster_quality_maps : dict
+        A dictionary mapping probe names to cluster quality arrays.
+        Example: {'probe0': quality_array_probe0, 'probe1': quality_array_probe1}
+                 where quality_array is from bombcell_sort_units and corresponds to
+                 the order of clusters in spike_recordings[probe][0]['clusters']['cluster_id'].
+    neural_sleep_df : pd.DataFrame
+        DataFrame with sleep bout information ('start_timestamp_s', 'end_timestamp_s').
+    subject : str
+        Subject identifier.
+    output_folder : str
+        Directory to save plots.
+    bin_sizes_ms : list
+        List of bin sizes in milliseconds (e.g., [10, 50, 100]).
+    probes_to_use : list, optional
+        List of probe names to include (e.g., ['probe0', 'probe1']).
+    n_components_pca : int, optional
+        Number of PCA components to compute.
+    components_to_plot_scatter : tuple, optional
+        PC indices for the scatter plot (0-indexed).
+    max_components_for_variance_plot : int, optional
+        Maximum number of components for the cumulative variance plot.
+    cluster_qualities_to_include : list, optional
+        List of cluster quality labels to include.
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Created output directory: {output_folder}")
+
+    all_cumulative_variances = {}
+    pc1_idx, pc2_idx = components_to_plot_scatter
+
+    for bin_size_ms in bin_sizes_ms:
+        bin_size_s = bin_size_ms / 1000.0
+        print(f"\nProcessing bin size: {bin_size_ms} ms ({bin_size_s} s)")
+
+        combined_counts_for_bin = []
+        time_bins_current_binning = None # Will be set by the first probe
+
+        for probe_idx, probe_name in enumerate(probes_to_use):
+            # Check if probe exists and has data using .empty instead of boolean evaluation
+            if probe_name not in spike_recordings or spike_recordings[probe_name].empty:
+                print(f"Spike data for {probe_name} not found. Skipping.")
+                continue
+            if probe_name not in cluster_quality_maps:
+                print(f"Cluster quality for {probe_name} not found. Skipping.")
+                continue
+
+            probe_spikes_data = spike_recordings[probe_name].iloc[0]['spikes']
+            probe_clusters_data = spike_recordings[probe_name].iloc[0]['clusters']
+            probe_quality_labels = cluster_quality_maps[probe_name]
+
+            # Fixed: Use 'cluster_id' instead of 'ids'
+            all_cluster_ids_probe = probe_clusters_data['cluster_id']
+            
+            # Ensure quality labels array matches the number of cluster IDs
+            if len(all_cluster_ids_probe) != len(probe_quality_labels):
+                print(f"Warning: Mismatch in cluster ID count ({len(all_cluster_ids_probe)}) and quality labels ({len(probe_quality_labels)}) for {probe_name}. Skipping probe.")
+                continue
+
+            # Create mask for selecting clusters of desired quality
+            quality_mask = np.isin(probe_quality_labels, cluster_qualities_to_include)
+            selected_cluster_ids = all_cluster_ids_probe[quality_mask]
+
+            if len(selected_cluster_ids) == 0:
+                print(f"No clusters of desired quality found for {probe_name}. Skipping.")
+                continue
+
+            # Filter spikes: only include spikes from selected clusters
+            spike_times_all = probe_spikes_data['times']
+            # Fixed: Use 'clusters' instead of 'clusters' (this was already correct)
+            spike_clusters_all = probe_spikes_data['clusters']
+            
+            # Mask for spikes belonging to selected clusters
+            spike_selection_mask = np.isin(spike_clusters_all, selected_cluster_ids)
+            
+            filtered_spike_times = spike_times_all[spike_selection_mask]
+            filtered_spike_clusters = spike_clusters_all[spike_selection_mask]
+
+            if len(filtered_spike_times) == 0:
+                print(f"No spikes found from selected clusters for {probe_name}. Skipping.")
+                continue
+
+            # Bin the filtered spikes
+            # bincount2D expects x (times), y (clusters)
+            # ybin=0 means aggregate by unique values in y (filtered_spike_clusters)
+            counts_probe, tb_probe, cids_probe = bincount2D(
+                x=filtered_spike_times,
+                y=filtered_spike_clusters,
+                xbin=bin_size_s,
+                ybin=0, # Use unique cluster IDs present in filtered_spike_clusters
+                xlim=[np.min(filtered_spike_times), np.max(filtered_spike_times)]
+            )
+            
+            if counts_probe is None or counts_probe.shape[0] == 0 or counts_probe.shape[1] == 0:
+                print(f"Binning resulted in empty counts for {probe_name}. Skipping.")
+                continue
+
+            print(f"  {probe_name}: Binned counts shape: {counts_probe.shape} (clusters x timebins)")
+            combined_counts_for_bin.append(counts_probe)
+
+            if time_bins_current_binning is None: # Set time bins from the first processed probe
+                time_bins_current_binning = tb_probe
+            elif not np.array_equal(time_bins_current_binning, tb_probe):
+                # This case should ideally not happen if recordings are aligned and binning is consistent
+                # For simplicity, we'll truncate to the shortest if they differ.
+                print(f"  Warning: Time bins differ between probes for bin size {bin_size_ms}ms. Truncating.")
+                min_len = min(len(time_bins_current_binning), len(tb_probe))
+                time_bins_current_binning = time_bins_current_binning[:min_len]
+                # Adjust existing combined_counts if this is not the first probe
+                for i in range(len(combined_counts_for_bin)-1):
+                    combined_counts_for_bin[i] = combined_counts_for_bin[i][:, :min_len]
+                combined_counts_for_bin[-1] = combined_counts_for_bin[-1][:, :min_len]
+
+        if not combined_counts_for_bin or time_bins_current_binning is None:
+            print(f"No data to process for bin size {bin_size_ms} ms. Skipping PCA.")
+            continue
+        
+        # Ensure all count matrices have the same number of time bins
+        min_timepoints = min(arr.shape[1] for arr in combined_counts_for_bin)
+        combined_matrix_list = [arr[:, :min_timepoints] for arr in combined_counts_for_bin]
+        time_bins_current_binning = time_bins_current_binning[:min_timepoints]
+
+        combined_matrix = np.vstack(combined_matrix_list).astype(np.float32) # (total_neurons x timepoints)
+        print(f"  Combined matrix shape for bin size {bin_size_ms}ms: {combined_matrix.shape}")
+
+        if combined_matrix.shape[0] == 0 or combined_matrix.shape[1] == 0:
+            print(f"Combined matrix is empty for bin size {bin_size_ms}ms. Skipping PCA.")
+            continue
+
+        # Prepare state labels for current time bins
+        state_labels_current_binning = np.zeros(len(time_bins_current_binning), dtype=int) # 0 for wake
+        if not neural_sleep_df.empty:
+            for _, row in neural_sleep_df.iterrows():
+                start_idx = np.searchsorted(time_bins_current_binning, row['start_timestamp_s'], side='left')
+                end_idx = np.searchsorted(time_bins_current_binning, row['end_timestamp_s'], side='right')
+                state_labels_current_binning[start_idx:end_idx] = 1 # 1 for sleep
+        
+        # PCA
+        X = combined_matrix.T # (timepoints x neurons)
+        if X.shape[0] < n_components_pca or X.shape[1] < n_components_pca :
+            print(f"  Data shape {X.shape} too small for {n_components_pca} PCA components. Skipping bin size {bin_size_ms}ms.")
+            continue
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        current_n_components = min(n_components_pca, X_scaled.shape[0], X_scaled.shape[1])
+        if current_n_components < 2: # Need at least 2 components for scatter plot
+             print(f"  Not enough features/samples ({current_n_components}) for PCA. Skipping bin size {bin_size_ms}ms.")
+             continue
+
+        pca = PCA(n_components=current_n_components)
+        pca_result = pca.fit_transform(X_scaled) # (timepoints x components)
+        
+        # Store cumulative variance
+        all_cumulative_variances[bin_size_ms] = np.cumsum(pca.explained_variance_ratio_)
+
+        # NEW: Create enhanced visualization for this bin size (4 subplots in one figure)
+        create_enhanced_pca_visualization(
+            pca_result=pca_result,
+            state_labels=state_labels_current_binning,
+            time_bins=time_bins_current_binning,
+            neural_sleep_df=neural_sleep_df,
+            bin_size_ms=bin_size_ms,
+            subject=subject,
+            output_folder=output_folder
+        )
+
+    # Plot Cumulative Explained Variance
+    if not all_cumulative_variances:
+        print("No PCA results to plot for cumulative variance.")
+        return
+
+    fig_variance, ax_variance = plt.subplots(figsize=(12, 8))
+    num_components_to_show = min(max_components_for_variance_plot, n_components_pca)
+
+    for bin_size_ms, cum_var in all_cumulative_variances.items():
+        components_axis = np.arange(1, min(len(cum_var), num_components_to_show) + 1)
+        ax_variance.plot(components_axis, cum_var[:min(len(cum_var), num_components_to_show)], 
+                         marker='o', linestyle='-', markersize=4, label=f'{bin_size_ms} ms bin')
+
+    ax_variance.set_xlabel('Number of Principal Components')
+    ax_variance.set_ylabel('Cumulative Explained Variance')
+    ax_variance.set_title(f'{subject}: PCA Cumulative Explained Variance by Bin Size')
+    ax_variance.grid(True, alpha=0.5)
+    ax_variance.legend(title="Bin Size")
+    ax_variance.set_xticks(np.arange(0, num_components_to_show + 1, 5 if num_components_to_show > 20 else 1))
+    ax_variance.set_yticks(np.arange(0, 1.1, 0.1))
+    ax_variance.set_ylim(0, 1.05)
+    ax_variance.set_xlim(0, num_components_to_show + 1)
+
+    variance_plot_filename = os.path.join(output_folder, f"{subject}_pca_cumulative_variance_by_binsize.png")
+    plt.savefig(variance_plot_filename, dpi=300)
+    plt.show()
+    plt.close(fig_variance)
+    print(f"Saved cumulative variance plot to {variance_plot_filename}")
+
+    print("\nFinished PCA analysis across bin sizes.")
+
+    return all_cumulative_variances
+
+
+def create_enhanced_pca_visualization(pca_result, state_labels, time_bins, neural_sleep_df, 
+                                    bin_size_ms, subject, output_folder):
+    """
+    Create enhanced PCA visualization with 4 subplots: scatter, density, wake-only, sleep-only
+    """
+    
+    # Create figure with 2x2 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'PCA Analysis - {subject} (Bin Size: {bin_size_ms}ms)', fontsize=16, y=0.98)
+    
+    # Extract PC1 and PC2
+    pc1 = pca_result[:, 0]
+    pc2 = pca_result[:, 1]
+    
+    # Define colors
+    wake_color = '#FF6B6B'  # Red
+    sleep_color = '#4ECDC4'  # Teal
+    
+    # Create masks
+    wake_mask = state_labels == 0
+    sleep_mask = state_labels == 1
+    
+    # Plot 1: Traditional scatter plot (PC1 vs PC2)
+    ax1 = axes[0, 0]
+    ax1.scatter(pc1[wake_mask], pc2[wake_mask], c=wake_color, alpha=0.6, s=20, label='Wake')
+    ax1.scatter(pc1[sleep_mask], pc2[sleep_mask], c=sleep_color, alpha=0.6, s=20, label='Sleep')
+    ax1.set_xlabel('PC1')
+    ax1.set_ylabel('PC2')
+    ax1.set_title('PC1 vs PC2 Scatter')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Density plot
+    ax2 = axes[0, 1]
+    
+    # Create density plot using hexbin
+    hb = ax2.hexbin(pc1, pc2, gridsize=30, cmap='viridis', alpha=0.7)
+    ax2.set_xlabel('PC1')
+    ax2.set_ylabel('PC2')
+    ax2.set_title('PC1 vs PC2 Density')
+    plt.colorbar(hb, ax=ax2, label='Count')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Wake only
+    ax3 = axes[1, 0]
+    if np.sum(wake_mask) > 0:
+        ax3.scatter(pc1[wake_mask], pc2[wake_mask], c=wake_color, alpha=0.6, s=20)
+        ax3.set_xlabel('PC1')
+        ax3.set_ylabel('PC2')
+        ax3.set_title(f'Wake State Only (n={np.sum(wake_mask)} bins)')
+        ax3.grid(True, alpha=0.3)
+        
+        # Match axis limits to main plot
+        ax3.set_xlim(ax1.get_xlim())
+        ax3.set_ylim(ax1.get_ylim())
+    else:
+        ax3.text(0.5, 0.5, 'No wake data', ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Wake State Only (No Data)')
+    
+    # Plot 4: Sleep only  
+    ax4 = axes[1, 1]
+    if np.sum(sleep_mask) > 0:
+        ax4.scatter(pc1[sleep_mask], pc2[sleep_mask], c=sleep_color, alpha=0.6, s=20)
+        ax4.set_xlabel('PC1')
+        ax4.set_ylabel('PC2')
+        ax4.set_title(f'Sleep State Only (n={np.sum(sleep_mask)} bins)')
+        ax4.grid(True, alpha=0.3)
+        
+        # Match axis limits to main plot
+        ax4.set_xlim(ax1.get_xlim())
+        ax4.set_ylim(ax1.get_ylim())
+    else:
+        ax4.text(0.5, 0.5, 'No sleep data', ha='center', va='center', transform=ax4.transAxes)
+        ax4.set_title('Sleep State Only (No Data)')
+    
+    # Add statistics text
+    stats_text = f"""Statistics:
+    Total bins: {len(state_labels)}
+    Wake bins: {np.sum(wake_mask)} ({np.sum(wake_mask)/len(state_labels)*100:.1f}%)
+    Sleep bins: {np.sum(sleep_mask)} ({np.sum(sleep_mask)/len(state_labels)*100:.1f}%)
+    Bin size: {bin_size_ms}ms
+    """
+    
+    fig.text(0.02, 0.02, stats_text, fontsize=10, verticalalignment='bottom',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_path = os.path.join(output_folder, f'{subject}_pca_enhanced_{bin_size_ms}ms.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print(f"Enhanced PCA plot saved: {plot_path}")
+
+def correlate_pc_with_movement(pca_results, dlc_folder, pc_index=1, time_range=None, 
+                             movement_column='smoothed_difference'):
+    """
+    Correlate a specific PC with movement data over a defined time range.
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca function
+    dlc_folder : str
+        Path to the DLC folder containing behavioral data
+    pc_index : int, optional
+        Which PC to analyze (0=PC1, 1=PC2, etc.) (default: 1 for PC2)
+    time_range : tuple, optional
+        (start_time, end_time) in seconds. If None, uses full recording
+    movement_column : str, optional
+        Column name for movement data (default: 'smoothed_difference')
+    
+    Returns:
+    --------
+    dict
+        Dictionary containing correlation results and aligned data
+    """
+    from scipy.interpolate import interp1d
+    from scipy.stats import pearsonr, spearmanr
+    import os
+    import pandas as pd
+    import numpy as np
+    
+    # Extract PC data
+    if 'pca_result' not in pca_results:
+        print("Error: PCA results not found")
+        return None
+    
+    pc_data = pca_results['pca_result'][:, pc_index]
+    time_bins_pca = pca_results['time_bins_used']
+    
+    print(f"PC{pc_index+1} data: {len(pc_data)} time points from {time_bins_pca[0]:.1f}s to {time_bins_pca[-1]:.1f}s")
+    
+    # Load behavioral data (pixel differences)
+    pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+    pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                       if f.endswith('.csv') and 'pixel_differences' in f]
+    
+    if not pixel_diff_files:
+        print(f"No pixel difference CSV found in {pixel_diff_path}")
+        return None
+    
+    # Load the behavioral data
+    pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+    try:
+        behavior_data = pd.read_csv(pixel_diff_file)
+        print(f"Loaded behavioral data from {pixel_diff_file}")
+        
+        if movement_column not in behavior_data.columns or 'time_sec' not in behavior_data.columns:
+            print(f"Required columns not found. Available: {behavior_data.columns.tolist()}")
+            return None
+            
+    except Exception as e:
+        print(f"Error loading behavioral data: {e}")
+        return None
+    
+    # Extract time and movement data
+    time_sec = behavior_data['time_sec'].values
+    movement_data = behavior_data[movement_column].values
+    
+    # Remove NaN values from movement data
+    valid_mask = ~np.isnan(movement_data)
+    time_sec_clean = time_sec[valid_mask]
+    movement_data_clean = movement_data[valid_mask]
+    
+    print(f"Movement data: {len(movement_data_clean)} valid points from {time_sec_clean[0]:.1f}s to {time_sec_clean[-1]:.1f}s")
+    
+    # Apply time range filter if specified
+    if time_range is not None:
+        start_time, end_time = time_range
+        print(f"Filtering to time range: {start_time}s to {end_time}s")
+        
+        # Filter PCA data
+        pca_time_mask = (time_bins_pca >= start_time) & (time_bins_pca <= end_time)
+        time_bins_filtered = time_bins_pca[pca_time_mask]
+        pc_data_filtered = pc_data[pca_time_mask]
+        
+        # Filter movement data
+        movement_time_mask = (time_sec_clean >= start_time) & (time_sec_clean <= end_time)
+        time_sec_filtered = time_sec_clean[movement_time_mask]
+        movement_data_filtered = movement_data_clean[movement_time_mask]
+        
+        print(f"After filtering - PC data: {len(pc_data_filtered)} points, Movement data: {len(movement_data_filtered)} points")
+    else:
+        time_bins_filtered = time_bins_pca
+        pc_data_filtered = pc_data
+        time_sec_filtered = time_sec_clean
+        movement_data_filtered = movement_data_clean
+    
+    # Check if we have overlapping data
+    if len(time_bins_filtered) == 0 or len(time_sec_filtered) == 0:
+        print("Error: No data in the specified time range")
+        return None
+    
+    # Find common time range
+    min_time = max(time_bins_filtered[0], time_sec_filtered[0])
+    max_time = min(time_bins_filtered[-1], time_sec_filtered[-1])
+    
+    if min_time >= max_time:
+        print("Error: No overlapping time range between PC and movement data")
+        return None
+    
+    print(f"Common time range: {min_time:.1f}s to {max_time:.1f}s")
+    
+    # Further filter both datasets to common time range
+    pca_common_mask = (time_bins_filtered >= min_time) & (time_bins_filtered <= max_time)
+    movement_common_mask = (time_sec_filtered >= min_time) & (time_sec_filtered <= max_time)
+    
+    time_bins_common = time_bins_filtered[pca_common_mask]
+    pc_data_common = pc_data_filtered[pca_common_mask]
+    time_sec_common = time_sec_filtered[movement_common_mask]
+    movement_data_common = movement_data_filtered[movement_common_mask]
+    
+    # Interpolate movement data to match PCA time points
+    if len(time_sec_common) < 2:
+        print("Error: Insufficient movement data points for interpolation")
+        return None
+    
+    interp_func = interp1d(time_sec_common, movement_data_common, 
+                          kind='linear', bounds_error=False, fill_value=np.nan)
+    movement_interpolated = interp_func(time_bins_common)
+    
+    # Remove any remaining NaN values
+    valid_interp_mask = ~np.isnan(movement_interpolated)
+    final_pc_data = pc_data_common[valid_interp_mask]
+    final_movement_data = movement_interpolated[valid_interp_mask]
+    final_time_bins = time_bins_common[valid_interp_mask]
+    
+    print(f"Final aligned data: {len(final_pc_data)} points")
+    
+    if len(final_pc_data) < 10:
+        print("Error: Too few data points for reliable correlation")
+        return None
+    
+    # Calculate correlations
+    pearson_r, pearson_p = pearsonr(final_pc_data, final_movement_data)
+    spearman_r, spearman_p = spearmanr(final_pc_data, final_movement_data)
+    
+    # Print results
+    print(f"\n=== PC{pc_index+1} vs Movement Correlation Results ===")
+    print(f"Time range analyzed: {final_time_bins[0]:.1f}s to {final_time_bins[-1]:.1f}s")
+    print(f"Data points: {len(final_pc_data)}")
+    print(f"Pearson correlation: r = {pearson_r:.4f}, p = {pearson_p:.4f}")
+    print(f"Spearman correlation: ρ = {spearman_r:.4f}, p = {spearman_p:.4f}")
+    
+    return {
+        'pc_index': pc_index,
+        'time_range': time_range,
+        'final_time_bins': final_time_bins,
+        'pc_data': final_pc_data,
+        'movement_data': final_movement_data,
+        'pearson_correlation': pearson_r,
+        'pearson_p_value': pearson_p,
+        'spearman_correlation': spearman_r,
+        'spearman_p_value': spearman_p,
+        'n_points': len(final_pc_data)
+    }
+
+
+def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
+                               subject, output_folder, regions_to_analyze, 
+                               movement_column='smoothed_difference', components_to_plot=(0, 1),
+                               use_sg_filter=True):
+    """
+    Analyze specific regions of PC space over time with behavioral and spectral context.
+    Creates separate plot sets for each region with movement-intensity coloring.
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca function
+    dlc_folder : str
+        Path to the DLC folder containing behavioral data
+    smoothed_results : dict
+        Results from power_band_smoothing containing delta power
+    neural_sleep_df : DataFrame
+        DataFrame with sleep bout information
+    subject : str
+        Subject identifier
+    output_folder : str
+        Directory to save plots
+    regions_to_analyze : list of dict
+        List of regions to analyze, each dict should have:
+        {'name': 'Region1', 'x_range': [x_min, x_max], 'y_range': [y_min, y_max]}
+        Note: 'color' field is no longer needed as colors come from movement intensity
+    movement_column : str
+        Column name for movement data
+    components_to_plot : tuple
+        Which PC components to use (default: (0, 1) for PC1 vs PC2)
+    use_sg_filter : bool
+        Whether to use Savitzky-Golay (True) or moving average (False) filtered delta power
+        
+    Returns:
+    --------
+    dict : Analysis results including region assignments and timing
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as cm
+    from scipy.interpolate import interp1d
+    
+    # Extract PC data
+    if 'pca_result' not in pca_results:
+        print("Error: PCA results not found")
+        return None
+    
+    pc_data = pca_results['pca_result']
+    time_bins_pca = pca_results['time_bins_used']
+    
+    comp1_idx, comp2_idx = components_to_plot
+    pc1 = pc_data[:, comp1_idx]
+    pc2 = pc_data[:, comp2_idx]
+    
+    print(f"PC{comp1_idx+1} vs PC{comp2_idx+1} analysis: {len(pc1)} time points")
+    
+    # Load behavioral data (movement)
+    pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+    pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                       if f.endswith('.csv') and 'pixel_differences' in f]
+    
+    if not pixel_diff_files:
+        print(f"No pixel difference CSV found in {pixel_diff_path}")
+        return None
+    
+    # Load movement data
+    pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+    try:
+        behavior_data = pd.read_csv(pixel_diff_file)
+        movement_time = behavior_data['time_sec'].values
+        movement_data = behavior_data[movement_column].values
+        
+        # Remove NaN values
+        valid_mask = ~np.isnan(movement_data)
+        movement_time = movement_time[valid_mask]
+        movement_data = movement_data[valid_mask]
+        
+        print(f"Movement data loaded: {len(movement_data)} points")
+        
+    except Exception as e:
+        print(f"Error loading behavioral data: {e}")
+        return None
+    
+    # Get movement values at PC time points for coloring
+    if len(movement_time) > 1:
+        interp_func = interp1d(movement_time, movement_data, 
+                             kind='linear', bounds_error=False, fill_value=np.nan)
+        movement_at_pc_times = interp_func(time_bins_pca)
+        
+        # Remove NaN values for coloring
+        valid_movement_mask = ~np.isnan(movement_at_pc_times)
+        print(f"Valid movement data at PC times: {np.sum(valid_movement_mask)}/{len(movement_at_pc_times)}")
+    else:
+        print("Error: Insufficient movement data for interpolation")
+        return None
+    
+    # Get delta power data from smoothed_results
+    band_powers = None
+    smoothed_available = False
+    filter_type = None
+    
+    # First check if smoothed_results is provided directly
+    if smoothed_results is not None:
+        # Try to determine which filter was used in save_sleep_periods_to_csv
+        if output_folder:
+            sleep_times_csv = os.path.join(output_folder, "sleep_times.csv")
+            if os.path.exists(sleep_times_csv):
+                try:
+                    sleep_df = pd.read_csv(sleep_times_csv)
+                    if 'filter' in sleep_df.columns and len(sleep_df) > 0:
+                        filter_name = sleep_df['filter'].iloc[0]
+                        if 'Savitzky-Golay' in filter_name:
+                            filter_type = 'SG'
+                            if 'savitzky_golay' in smoothed_results:
+                                band_powers = smoothed_results['savitzky_golay']
+                                smoothed_available = True
+                        elif 'MovingAverage' in filter_name or 'Moving Average' in filter_name:
+                            filter_type = 'MA'
+                            if 'moving_average' in smoothed_results:
+                                band_powers = smoothed_results['moving_average']
+                                smoothed_available = True
+                except Exception as e:
+                    print(f"Error determining filter type: {e}")
+        
+        # Fallback to user-specified filter if CSV method failed
+        if not smoothed_available:
+            if use_sg_filter:
+                if 'savitzky_golay' in smoothed_results:
+                    band_powers = smoothed_results['savitzky_golay']
+                    filter_type = "SG"
+                    smoothed_available = True
+                else:
+                    print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+            else:
+                if 'moving_average' in smoothed_results:
+                    band_powers = smoothed_results['moving_average']
+                    filter_type = "MA"
+                    smoothed_available = True
+                else:
+                    print("Error: Moving average filtered data not found in smoothed_results")
+    
+    # Extract Delta band data from the band_powers dictionary
+    delta_power = None
+    delta_time = None
+    
+    if band_powers is not None and 'Delta' in band_powers:
+        delta_power = band_powers['Delta']
+        delta_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+        print(f"Delta power data ({filter_type}): {len(delta_power)} points")
+    else:
+        print("Error: Delta band not found in smoothed results")
+        return None
+    
+    # Assign each PC point to regions and collect results
+    all_region_results = {}
+    
+    for region_idx, region in enumerate(regions_to_analyze):
+        # Find points in this region
+        x_mask = (pc1 >= region['x_range'][0]) & (pc1 <= region['x_range'][1])
+        y_mask = (pc2 >= region['y_range'][0]) & (pc2 <= region['y_range'][1])
+        region_mask = x_mask & y_mask & valid_movement_mask
+        
+        if np.sum(region_mask) == 0:
+            print(f"Warning: No valid points found in region '{region['name']}'")
+            continue
+        
+        # Get data for this region
+        region_times = time_bins_pca[region_mask]
+        region_movement_values = movement_at_pc_times[region_mask]
+        region_pc1 = pc1[region_mask]  
+        region_pc2 = pc2[region_mask]
+        
+        print(f"Region '{region['name']}': {len(region_times)} points")
+        
+        # Create color map based on movement intensity (like in the PCA plot)
+        # Use the same colormap as plot_pca_with_behavioral_features
+        norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
+                        vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
+        cmap = cm.get_cmap('coolwarm')  # Blue for low movement, red for high movement
+        region_colors = cmap(norm(region_movement_values))
+        
+        # Create the plot for this region
+        fig, axes = plt.subplots(3, 1, figsize=(16, 12))
+        fig.suptitle(f'{subject}: {region["name"]} - PC Region Analysis Over Time', fontsize=16)
+        
+        # Top plot: Movement over time
+        ax1 = axes[0]
+        ax1.plot(movement_time, movement_data, 'k-', linewidth=0.5, alpha=0.3, label='All Movement')
+        
+        # Add sleep periods as background
+        for _, row in neural_sleep_df.iterrows():
+            ax1.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                       color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+        
+        # Get movement values at region times (interpolate)
+        if len(movement_time) > 1:
+            movement_at_region_times = interp_func(region_times)
+            valid_interp = ~np.isnan(movement_at_region_times)
+            
+            # Plot region points with movement-intensity colors
+            scatter = ax1.scatter(region_times[valid_interp], movement_at_region_times[valid_interp], 
+                                c=region_movement_values[valid_interp], cmap='coolwarm', 
+                                s=20, alpha=0.8, norm=norm, zorder=5, 
+                                label=f"{region['name']} (n={np.sum(valid_interp)})")
+        
+        ax1.set_ylabel('Movement (pixels)')
+        ax1.set_title(f'Movement Over Time - {region["name"]}')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Middle plot: Delta power over time
+        ax2 = axes[1]
+        ax2.plot(delta_time, delta_power, 'purple', linewidth=0.8, alpha=0.3, label=f'All Delta Power ({filter_type})')
+        
+        # Add sleep periods
+        for _, row in neural_sleep_df.iterrows():
+            ax2.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                       color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+        
+        # Get delta power values at region times (interpolate)
+        if len(delta_time) > 1:
+            interp_func_delta = interp1d(delta_time, delta_power, 
+                                       kind='linear', bounds_error=False, fill_value=np.nan)
+            delta_at_region_times = interp_func_delta(region_times)
+            valid_interp_delta = ~np.isnan(delta_at_region_times)
+            
+            # Plot region points with movement-intensity colors
+            scatter2 = ax2.scatter(region_times[valid_interp_delta], delta_at_region_times[valid_interp_delta], 
+                                 c=region_movement_values[valid_interp_delta], cmap='coolwarm', 
+                                 s=20, alpha=0.8, norm=norm, zorder=5,
+                                 label=f"{region['name']} (n={np.sum(valid_interp_delta)})")
+        
+        ax2.set_ylabel('Delta Power (dB)')
+        ax2.set_title(f'Delta Power Over Time ({filter_type} filtered) - {region["name"]}')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Bottom plot: PC space showing this region
+        ax3 = axes[2]
+        
+        # Plot all points in light gray
+        ax3.scatter(pc1, pc2, c='lightgray', s=5, alpha=0.2, label='All Data')
+        
+        # Plot this region's points with movement-intensity colors
+        scatter3 = ax3.scatter(region_pc1, region_pc2, 
+                             c=region_movement_values, cmap='coolwarm', 
+                             s=25, alpha=0.8, norm=norm, 
+                             label=f"{region['name']} (n={len(region_pc1)})")
+        
+        # Draw region boundary
+        x_min, x_max = region['x_range']
+        y_min, y_max = region['y_range']
+        rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, 
+                           fill=False, edgecolor='black', linewidth=2, linestyle='--')
+        ax3.add_patch(rect)
+        
+        ax3.set_xlabel(f'PC{comp1_idx+1}')
+        ax3.set_ylabel(f'PC{comp2_idx+1}')
+        ax3.set_title(f'PC{comp1_idx+1} vs PC{comp2_idx+1} - {region["name"]}')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        ax3.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+        ax3.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+        
+        # Add colorbar for movement intensity
+        plt.colorbar(scatter3, ax=ax3, label='Movement Intensity (pixels)')
+        
+        plt.tight_layout()
+        
+        # Save the plot for this region
+        safe_region_name = region['name'].replace(' ', '_').replace('/', '_')
+        plot_path = os.path.join(output_folder, f'{subject}_pc_region_{safe_region_name}_analysis_{filter_type}.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        print(f"PC region analysis plot saved: {plot_path}")
+        
+        # Store results for this region
+        all_region_results[region['name']] = {
+            'region_mask': region_mask,
+            'time_points': region_times,
+            'movement_values': region_movement_values,
+            'pc1_values': region_pc1,
+            'pc2_values': region_pc2,
+            'n_points': len(region_times)
+        }
+        
+        # Print summary statistics for this region
+        print(f"\n=== {region['name']} Analysis Summary ===")
+        
+        # Check sleep/wake distribution
+        sleep_count = 0
+        wake_count = 0
+        
+        for time_point in region_times:
+            is_sleep = False
+            for _, row in neural_sleep_df.iterrows():
+                if row['start_timestamp_s'] <= time_point <= row['end_timestamp_s']:
+                    is_sleep = True
+                    break
+            
+            if is_sleep:
+                sleep_count += 1
+            else:
+                wake_count += 1
+        
+        print(f"  Total points: {len(region_times)}")
+        print(f"  Sleep points: {sleep_count} ({sleep_count/len(region_times)*100:.1f}%)")
+        print(f"  Wake points: {wake_count} ({wake_count/len(region_times)*100:.1f}%)")
+        print(f"  Time range: {region_times.min():.1f}s - {region_times.max():.1f}s")
+        print(f"  Movement range: {region_movement_values.min():.1f} - {region_movement_values.max():.1f} pixels")
+    
+    return {
+        'region_results': all_region_results,
+        'pc1': pc1,
+        'pc2': pc2,
+        'time_bins': time_bins_pca,
+        'movement_at_pc_times': movement_at_pc_times,
+        'regions_analyzed': regions_to_analyze,
+        'filter_used': filter_type
+    }
