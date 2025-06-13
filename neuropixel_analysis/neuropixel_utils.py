@@ -4084,3 +4084,734 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         'regions_analyzed': regions_to_analyze,
         'filter_used': filter_type
     }
+def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
+                                   subject, output_folder, time_regions_to_analyze, 
+                                   movement_column='smoothed_difference', components_to_plot=(0, 1),
+                                   use_sg_filter=True, behavior='movement'):
+    """
+    Analyze specific time regions by highlighting them in PC space with behavioral coloring.
+    Creates three-panel plots: behavior over time, PC space with movement coloring, and PC space with time gradient coloring.
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca function
+    dlc_folder : str
+        Path to the DLC folder containing behavioral data
+    smoothed_results : dict
+        Results from power_band_smoothing containing delta power
+    neural_sleep_df : DataFrame
+        DataFrame with sleep bout information
+    subject : str
+        Subject identifier
+    output_folder : str
+        Directory to save plots
+    time_regions_to_analyze : list of dict
+        List of time regions to analyze, each dict should have:
+        {'name': 'Region1', 'start_time': start_s, 'end_time': end_s}
+    movement_column : str
+        Column name for movement data
+    components_to_plot : tuple
+        Which PC components to use (default: (0, 1) for PC1 vs PC2)
+    use_sg_filter : bool
+        Whether to use Savitzky-Golay (True) or moving average (False) filtered delta power
+    behavior : str
+        Type of behavioral data to plot: 'movement' or 'delta'
+        
+    Returns:
+    --------
+    dict : Analysis results including time region assignments and data
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as cm
+    from scipy.interpolate import interp1d
+    
+    # Extract PC data
+    if 'pca_result' not in pca_results:
+        print("Error: PCA results not found")
+        return None
+    
+    pc_data = pca_results['pca_result']
+    time_bins_pca = pca_results['time_bins_used']
+    
+    comp1_idx, comp2_idx = components_to_plot
+    pc1 = pc_data[:, comp1_idx]
+    pc2 = pc_data[:, comp2_idx]
+    
+    print(f"PC{comp1_idx+1} vs PC{comp2_idx+1} analysis: {len(pc1)} time points")
+    print(f"Time range: {time_bins_pca[0]:.1f}s to {time_bins_pca[-1]:.1f}s")
+    print(f"Behavior type: {behavior}")
+    
+    # Load behavioral data based on behavior parameter
+    if behavior == 'movement':
+        # Load movement data
+        pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+        pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                           if f.endswith('.csv') and 'pixel_differences' in f]
+        
+        if not pixel_diff_files:
+            print(f"No pixel difference CSV found in {pixel_diff_path}")
+            return None
+        
+        pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+        try:
+            behavior_data = pd.read_csv(pixel_diff_file)
+            behavior_time = behavior_data['time_sec'].values
+            behavior_values = behavior_data[movement_column].values
+            
+            # Remove NaN values
+            valid_mask = ~np.isnan(behavior_values)
+            behavior_time = behavior_time[valid_mask]
+            behavior_values = behavior_values[valid_mask]
+            
+            behavior_label = 'Movement (pixels)'
+            behavior_title = 'Movement Over Time'
+            color_map = 'coolwarm'  # Blue = low movement, Red = high movement
+            reverse_colormap = False
+            
+            print(f"Movement data loaded: {len(behavior_values)} points")
+            
+        except Exception as e:
+            print(f"Error loading behavioral data: {e}")
+            return None
+            
+    elif behavior == 'delta':
+        # Get delta power data from smoothed_results
+        band_powers = None
+        filter_type = None
+        
+        # Determine which filter was used
+        if output_folder:
+            sleep_times_csv = os.path.join(output_folder, "sleep_times.csv")
+            if os.path.exists(sleep_times_csv):
+                try:
+                    sleep_df = pd.read_csv(sleep_times_csv)
+                    if 'filter' in sleep_df.columns and len(sleep_df) > 0:
+                        filter_name = sleep_df['filter'].iloc[0]
+                        if 'Savitzky-Golay' in filter_name:
+                            filter_type = 'SG'
+                            if 'savitzky_golay' in smoothed_results:
+                                band_powers = smoothed_results['savitzky_golay']
+                        elif 'MovingAverage' in filter_name or 'Moving Average' in filter_name:
+                            filter_type = 'MA'
+                            if 'moving_average' in smoothed_results:
+                                band_powers = smoothed_results['moving_average']
+                except Exception as e:
+                    print(f"Error determining filter type: {e}")
+        
+        # Fallback to user-specified filter if CSV method failed
+        if band_powers is None:
+            if use_sg_filter:
+                if 'savitzky_golay' in smoothed_results:
+                    band_powers = smoothed_results['savitzky_golay']
+                    filter_type = "SG"
+                else:
+                    print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+                    return None
+            else:
+                if 'moving_average' in smoothed_results:
+                    band_powers = smoothed_results['moving_average']
+                    filter_type = "MA"
+                else:
+                    print("Error: Moving average filtered data not found in smoothed_results")
+                    return None
+        
+        # Extract Delta band data
+        if 'Delta' not in band_powers:
+            print(f"Error: Delta band not found in {filter_type} filtered data")
+            return None
+        
+        delta_power = band_powers['Delta']
+        behavior_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+        behavior_values = delta_power
+        
+        behavior_label = f'Delta Power (dB, {filter_type})'
+        behavior_title = f'Delta Power Over Time ({filter_type} filtered)'
+        color_map = 'coolwarm_r'  # Reverse: Blue = high delta (sleep), Red = low delta (wake)
+        reverse_colormap = True
+        
+        print(f"Delta power data loaded: {len(behavior_values)} points")
+    
+    else:
+        print(f"Error: Unknown behavior type '{behavior}'. Use 'movement' or 'delta'.")
+        return None
+    
+    # Get behavior values at PC time points for coloring
+    if len(behavior_time) > 1:
+        interp_func = interp1d(behavior_time, behavior_values, 
+                             kind='linear', bounds_error=False, fill_value=np.nan)
+        behavior_at_pc_times = interp_func(time_bins_pca)
+        
+        # Remove NaN values for coloring
+        valid_behavior_mask = ~np.isnan(behavior_at_pc_times)
+        print(f"Valid behavior data at PC times: {np.sum(valid_behavior_mask)}/{len(behavior_at_pc_times)}")
+    else:
+        print("Error: Insufficient behavior data for interpolation")
+        return None
+    
+    # Define different color gradients for time coloring
+    time_colormaps = ['inferno', 'plasma', 'viridis', 'magma', 'cividis', 'turbo']
+    
+    # Store results for all time regions
+    all_time_region_results = {}
+    
+    for region_idx, time_region in enumerate(time_regions_to_analyze):
+        start_time = time_region['start_time']
+        end_time = time_region['end_time']
+        region_name = time_region['name']
+        
+        print(f"\nAnalyzing time region '{region_name}': {start_time}s to {end_time}s")
+        
+        # Find PC time points within this time region
+        time_mask = (time_bins_pca >= start_time) & (time_bins_pca <= end_time) & valid_behavior_mask
+        
+        if np.sum(time_mask) == 0:
+            print(f"Warning: No valid points found in time region '{region_name}'")
+            continue
+        
+        # Get data for this time region
+        region_times = time_bins_pca[time_mask]
+        region_behavior_values = behavior_at_pc_times[time_mask]
+        region_pc1 = pc1[time_mask]
+        region_pc2 = pc2[time_mask]
+        
+        print(f"Time region '{region_name}': {len(region_times)} points")
+        
+        # Create color map based on behavior intensity
+        behavior_norm = Normalize(vmin=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 5), 
+                                vmax=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 95))
+        
+        # Create time-based color map (from start to end of time region)
+        time_norm = Normalize(vmin=region_times.min(), vmax=region_times.max())
+        time_cmap = cm.get_cmap(time_colormaps[region_idx % len(time_colormaps)])
+        
+        # Create the 3-panel plot for this time region
+        fig = plt.figure(figsize=(20, 12))
+        gs = plt.GridSpec(2, 2, height_ratios=[1, 1], width_ratios=[1, 1])
+        
+        # Top plot (spans both columns): Behavior over time with highlighted region
+        ax1 = fig.add_subplot(gs[0, :])
+        ax1.plot(behavior_time, behavior_values, 'k-', linewidth=0.8, alpha=0.7, label=behavior_title.split(' - ')[0])
+        
+        # Add sleep periods as background
+        for _, row in neural_sleep_df.iterrows():
+            ax1.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                       color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+        
+        # Highlight the selected time region
+        ax1.axvspan(start_time, end_time, color='yellow', alpha=0.3, 
+                   label=f'Selected Region', zorder=1)
+        
+        # Get behavior values at region times (interpolate)
+        if len(behavior_time) > 1:
+            behavior_at_region_times = interp_func(region_times)
+            valid_interp = ~np.isnan(behavior_at_region_times)
+            
+            # Plot region points with behavior-intensity colors
+            if np.sum(valid_interp) > 0:
+                scatter1 = ax1.scatter(region_times[valid_interp], behavior_at_region_times[valid_interp], 
+                                     c=region_behavior_values[valid_interp], cmap=color_map, 
+                                     s=30, alpha=0.9, norm=behavior_norm, zorder=5, 
+                                     edgecolors='black', linewidths=0.5)
+        
+        ax1.set_xlabel('Time (s)')
+        ax1.set_ylabel(behavior_label)
+        ax1.set_title(f'{behavior_title} - {region_name} Highlighted ({start_time}s - {end_time}s)')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xlim(behavior_time[0], behavior_time[-1])
+        
+        # Bottom left: PC space with behavior-intensity coloring
+        ax2 = fig.add_subplot(gs[1, 0])
+        
+        # Plot all points in light gray first
+        ax2.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3, label='All Other Times')
+        
+        # Plot the time region's points with behavior-intensity colors
+        if len(region_pc1) > 0:
+            scatter2 = ax2.scatter(region_pc1, region_pc2, 
+                                 c=region_behavior_values, cmap=color_map, 
+                                 s=25, alpha=0.8, norm=behavior_norm, 
+                                 edgecolors='black', linewidths=0.3,
+                                 label=f"{region_name} (n={len(region_pc1)})")
+            
+            # Add colorbar for behavior intensity
+            cbar2 = plt.colorbar(scatter2, ax=ax2, label=behavior_label, shrink=0.8)
+        
+        ax2.set_xlabel(f'PC{comp1_idx+1}')
+        ax2.set_ylabel(f'PC{comp2_idx+1}')
+        if behavior == 'movement':
+            ax2.set_title(f'PC Space - Movement Coloring')
+        else:
+            ax2.set_title(f'PC Space - Delta Power Coloring')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+        ax2.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+        
+        # Bottom right: PC space with time gradient coloring
+        ax3 = fig.add_subplot(gs[1, 1])
+        
+        # Plot all points in light gray first
+        ax3.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3, label='All Other Times')
+        
+        # Plot the time region's points with time gradient colors
+        if len(region_pc1) > 0:
+            scatter3 = ax3.scatter(region_pc1, region_pc2, 
+                                 c=region_times, cmap=time_cmap, 
+                                 s=25, alpha=0.8, norm=time_norm,
+                                 edgecolors='black', linewidths=0.3,
+                                 label=f"{region_name} (n={len(region_pc1)})")
+            
+            # Add colorbar for time gradient
+            cbar3 = plt.colorbar(scatter3, ax=ax3, label='Time (s)', shrink=0.8)
+            
+            # Add start/end markers
+            if len(region_pc1) > 1:
+                start_idx = np.argmin(region_times)
+                end_idx = np.argmax(region_times)
+                
+                ax3.plot(region_pc1[start_idx], region_pc2[start_idx], 'go', 
+                        markersize=8, label='Start', zorder=11)
+                ax3.plot(region_pc1[end_idx], region_pc2[end_idx], 'ro', 
+                        markersize=8, label='End', zorder=11)
+        
+        ax3.set_xlabel(f'PC{comp1_idx+1}')
+        ax3.set_ylabel(f'PC{comp2_idx+1}')
+        ax3.set_title(f'PC Space - Time Gradient Coloring')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        ax3.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+        ax3.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+        
+        # Overall title
+        behavior_type_title = "Movement" if behavior == 'movement' else "Delta Power"
+        fig.suptitle(f'{subject}: Time Region Analysis ({behavior_type_title}) - {region_name}', fontsize=18, y=0.95)
+        
+        plt.tight_layout()
+        
+        # Save the plot for this time region
+        safe_region_name = region_name.replace(' ', '_').replace('/', '_')
+        plot_path = os.path.join(output_folder, f'{subject}_{behavior}_{start_time}s-{end_time}s_PC{comp1_idx+1}_{comp2_idx+1}_analysis.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        print(f"Time region analysis plot saved: {plot_path}")
+        
+        # Store results for this time region
+        all_time_region_results[region_name] = {
+            'start_time': start_time,
+            'end_time': end_time,
+            'time_mask': time_mask,
+            'time_points': region_times,
+            'behavior_values': region_behavior_values,
+            'pc1_values': region_pc1,
+            'pc2_values': region_pc2,
+            'n_points': len(region_times),
+            'time_colormap': time_colormaps[region_idx % len(time_colormaps)],
+            'behavior_type': behavior
+        }
+        
+        # Print summary statistics for this time region
+        print(f"\n=== {region_name} Analysis Summary ===")
+        
+        # Check sleep/wake distribution
+        sleep_count = 0
+        wake_count = 0
+        
+        for time_point in region_times:
+            is_sleep = False
+            for _, row in neural_sleep_df.iterrows():
+                if row['start_timestamp_s'] <= time_point <= row['end_timestamp_s']:
+                    is_sleep = True
+                    break
+            
+            if is_sleep:
+                sleep_count += 1
+            else:
+                wake_count += 1
+        
+        print(f"  Time window: {start_time}s - {end_time}s ({end_time - start_time}s duration)")
+        print(f"  Total points: {len(region_times)}")
+        print(f"  Sleep points: {sleep_count} ({sleep_count/len(region_times)*100:.1f}%)")
+        print(f"  Wake points: {wake_count} ({wake_count/len(region_times)*100:.1f}%)")
+        
+        if behavior == 'movement':
+            print(f"  Movement range: {region_behavior_values.min():.1f} - {region_behavior_values.max():.1f} pixels")
+        else:
+            print(f"  Delta power range: {region_behavior_values.min():.2f} - {region_behavior_values.max():.2f} dB")
+            
+        print(f"  PC{comp1_idx+1} range: {region_pc1.min():.2f} - {region_pc1.max():.2f}")
+        print(f"  PC{comp2_idx+1} range: {region_pc2.min():.2f} - {region_pc2.max():.2f}")
+    
+    return {
+        'time_region_results': all_time_region_results,
+        'pc1': pc1,
+        'pc2': pc2,
+        'time_bins': time_bins_pca,
+        'behavior_at_pc_times': behavior_at_pc_times,
+        'time_regions_analyzed': time_regions_to_analyze,
+        'behavior_type': behavior
+    }
+
+def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
+                                            subject, output_folder, time_windows_to_analyze, 
+                                            movement_column='smoothed_difference', components_to_plot=(0, 1),
+                                            use_sg_filter=True, behavior='delta'):
+    """
+    Analyze multiple time windows of the same length by averaging corresponding time points across windows.
+    Creates plots showing the averaged trajectory in PC space.
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as cm
+    from scipy.interpolate import interp1d
+    
+    # Extract PC data
+    if 'pca_result' not in pca_results:
+        print("Error: PCA results not found")
+        return None
+    
+    pc_data = pca_results['pca_result']
+    time_bins_pca = pca_results['time_bins_used']
+    
+    comp1_idx, comp2_idx = components_to_plot
+    pc1 = pc_data[:, comp1_idx]
+    pc2 = pc_data[:, comp2_idx]
+    
+    print(f"PC{comp1_idx+1} vs PC{comp2_idx+1} analysis: {len(pc1)} time points")
+    print(f"Time range: {time_bins_pca[0]:.1f}s to {time_bins_pca[-1]:.1f}s")
+    print(f"Behavior type: {behavior}")
+    
+    # Check that all windows are the same length
+    window_durations = [w['end_time'] - w['start_time'] for w in time_windows_to_analyze]
+    if len(set(window_durations)) > 1:
+        print(f"Error: All time windows must be the same length. Found durations: {window_durations}")
+        return None
+    
+    window_duration = window_durations[0]
+    print(f"Analyzing {len(time_windows_to_analyze)} windows of {window_duration}s each")
+    
+    # EXACT COPY FROM WORKING plot_pca_with_behavioral_features function
+    # Load behavioral data (pixel differences)
+    pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+    pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                       if f.endswith('.csv') and 'pixel_differences' in f]
+    
+    movement_data = None
+    if pixel_diff_files:
+        pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+        try:
+            movement_data = pd.read_csv(pixel_diff_file)
+            print(f"Loaded movement data from {pixel_diff_file}")
+        except Exception as e:
+            print(f"Error loading movement data: {e}")
+    
+    # Extract delta power data (same as working function)
+    delta_power = None
+    if smoothed_results and 'savitzky_golay' in smoothed_results and 'Delta' in smoothed_results['savitzky_golay']:
+        delta_power = smoothed_results['savitzky_golay']['Delta']
+        print(f"Loaded delta power data: {len(delta_power)} time points")
+    else:
+        print("Warning: No delta power data found in smoothed_results")
+    
+    # Set up data based on behavior type (EXACT COPY)
+    if behavior == 'movement':
+        if movement_data is not None:
+            behavior_time = movement_data['time_sec'].values
+            behavior_values = movement_data[movement_column].values
+            # Remove NaN values
+            valid_mask = ~np.isnan(behavior_values)
+            behavior_time = behavior_time[valid_mask]
+            behavior_values = behavior_values[valid_mask]
+            behavior_label = 'Movement (pixels)'
+            behavior_title = 'Movement Over Time'
+            color_map = 'coolwarm'
+        else:
+            print("Error: No movement data available")
+            return None
+    elif behavior == 'delta':
+        if delta_power is not None:
+            # CREATE TIME ARRAY THAT MATCHES DELTA POWER LENGTH - EXACT COPY
+            behavior_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+            behavior_values = delta_power
+            behavior_label = 'Delta Power (dB, SG)'
+            behavior_title = 'Delta Power Over Time'
+            color_map = 'coolwarm_r'
+        else:
+            print("Error: No delta power data available")
+            return None
+    else:
+        print(f"Error: Unknown behavior type '{behavior}'")
+        return None
+    
+    # Get behavior values at PC time points for coloring
+    if len(behavior_time) > 1:
+        interp_func = interp1d(behavior_time, behavior_values, 
+                             kind='linear', bounds_error=False, fill_value=np.nan)
+        behavior_at_pc_times = interp_func(time_bins_pca)
+        
+        # Remove NaN values for coloring
+        valid_behavior_mask = ~np.isnan(behavior_at_pc_times)
+        print(f"Valid behavior data at PC times: {np.sum(valid_behavior_mask)}/{len(behavior_at_pc_times)}")
+    else:
+        print("Error: Insufficient behavior data for interpolation")
+        return None
+    
+    # Extract data for each time window and calculate averages
+    all_window_pc1 = []
+    all_window_pc2 = []
+    all_window_behavior = []
+    all_window_times = []
+    
+    for window_idx, time_window in enumerate(time_windows_to_analyze):
+        start_time = time_window['start_time']
+        end_time = time_window['end_time']
+        window_name = time_window['name']
+        
+        # Find PC time points within this time window
+        time_mask = (time_bins_pca >= start_time) & (time_bins_pca <= end_time) & valid_behavior_mask
+        
+        if np.sum(time_mask) == 0:
+            print(f"Warning: No valid points found in window '{window_name}'")
+            continue
+        
+        # Get data for this window
+        window_times = time_bins_pca[time_mask]
+        window_behavior_values = behavior_at_pc_times[time_mask]
+        window_pc1 = pc1[time_mask]
+        window_pc2 = pc2[time_mask]
+        
+        # Convert to relative time within window (0 to window_duration)
+        relative_times = window_times - start_time
+        
+        all_window_pc1.append(window_pc1)
+        all_window_pc2.append(window_pc2)
+        all_window_behavior.append(window_behavior_values)
+        all_window_times.append(relative_times)
+        
+        print(f"Window '{window_name}': {len(window_times)} points")
+    
+    if len(all_window_pc1) == 0:
+        print("Error: No valid windows found")
+        return None
+    
+    # Find the minimum number of points across all windows
+    min_points = min(len(w) for w in all_window_pc1)
+    print(f"Using {min_points} points per window (minimum across all windows)")
+    
+    # Truncate all windows to the same length and calculate averages
+    averaged_pc1 = np.zeros(min_points)
+    averaged_pc2 = np.zeros(min_points)
+    averaged_behavior = np.zeros(min_points)
+    averaged_times = np.linspace(0, window_duration, min_points)
+    
+    for point_idx in range(min_points):
+        pc1_values = [w[point_idx] for w in all_window_pc1]
+        pc2_values = [w[point_idx] for w in all_window_pc2]
+        behavior_values_list = [w[point_idx] for w in all_window_behavior]
+        
+        averaged_pc1[point_idx] = np.mean(pc1_values)
+        averaged_pc2[point_idx] = np.mean(pc2_values)
+        averaged_behavior[point_idx] = np.mean(behavior_values_list)
+    
+    print(f"Calculated averaged trajectory with {len(averaged_pc1)} points")
+    print(f"Behavior time array length: {len(behavior_time)}")
+    print(f"Behavior values array length: {len(behavior_values)}")
+    
+    # Create color map based on behavior intensity
+    behavior_norm = Normalize(vmin=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 5), 
+                            vmax=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 95))
+    
+    # Create time-based color map
+    time_norm = Normalize(vmin=0, vmax=window_duration)
+    
+    # Create the 4-panel plot
+    fig = plt.figure(figsize=(24, 16))
+    gs = plt.GridSpec(3, 2, height_ratios=[1, 1, 1], width_ratios=[2, 1])
+    
+    # Top plot (spans both columns): Full behavior over time with highlighted windows
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.plot(behavior_time, behavior_values, 'k-', linewidth=0.8, alpha=0.7, label=behavior_title)
+    
+    # Add sleep periods as background
+    for idx, row in neural_sleep_df.iterrows():
+        ax1.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                   color='blue', alpha=0.2, label='Sleep' if idx == 0 else "")
+    
+    # Highlight all selected time windows (NO WINDOW LABELS IN LEGEND)
+    window_colors = plt.cm.Set3(np.linspace(0, 1, len(time_windows_to_analyze)))
+    for window_idx, time_window in enumerate(time_windows_to_analyze):
+        start_time = time_window['start_time']
+        end_time = time_window['end_time']
+        
+        ax1.axvspan(start_time, end_time, color=window_colors[window_idx], alpha=0.3, zorder=1)
+        
+        # Get behavior values for this window and plot points COLORED BY BEHAVIOR VALUES
+        window_mask = (behavior_time >= start_time) & (behavior_time <= end_time)
+        if np.sum(window_mask) > 0:
+            window_behavior_vals = behavior_values[window_mask]
+            window_time_vals = behavior_time[window_mask]
+            # Color points by behavior values, not window colors
+            ax1.scatter(window_time_vals, window_behavior_vals, 
+                       c=window_behavior_vals, cmap=color_map, s=20, alpha=0.8, 
+                       norm=behavior_norm, zorder=5)
+    
+    ax1.set_xlabel('Time (s)')
+    ax1.set_ylabel(behavior_label)
+    ax1.set_title(f'{behavior_title} - {len(time_windows_to_analyze)} Windows Highlighted ({window_duration}s each)')
+    ax1.legend(loc='upper right', bbox_to_anchor=(1, 1), ncol=3)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(behavior_time[0], behavior_time[-1])
+    
+    # Middle plot (spans both columns): Averaged behavior over relative time
+    ax2 = fig.add_subplot(gs[1, :])
+    
+    # Plot individual windows in light colors
+    for window_idx, (window_behavior, window_times) in enumerate(zip(all_window_behavior, all_window_times)):
+        if len(window_behavior) >= min_points:
+            ax2.plot(window_times[:min_points], window_behavior[:min_points], 
+                    color='lightgray', alpha=0.5, linewidth=1)
+    
+    # Plot averaged behavior
+    ax2.plot(averaged_times, averaged_behavior, 'k-', linewidth=3, alpha=0.8, label='Averaged')
+    
+    # Plot points with behavior-intensity colors
+    scatter2 = ax2.scatter(averaged_times, averaged_behavior, 
+                         c=averaged_behavior, cmap=color_map, 
+                         s=40, alpha=0.9, norm=behavior_norm, zorder=5, 
+                         edgecolors='black', linewidths=0.5)
+    
+    ax2.set_xlabel('Relative Time (s)')
+    ax2.set_ylabel(behavior_label)
+    ax2.set_title(f'Averaged {behavior_title} - {len(time_windows_to_analyze)} Windows')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(0, window_duration)
+    
+    # Bottom left: PC space with behavior-intensity coloring
+    ax3 = fig.add_subplot(gs[2, 0])
+    
+    # Plot all PC points in light gray first
+    ax3.scatter(pc1, pc2, c='lightgray', s=8, alpha=0.2, label='All Other Times')
+    
+    # Plot ONLY the averaged trajectory points with behavior-intensity colors (no connections)
+    scatter3 = ax3.scatter(averaged_pc1, averaged_pc2, 
+                         c=averaged_behavior, cmap=color_map, 
+                         s=60, alpha=0.9, norm=behavior_norm, 
+                         edgecolors='black', linewidths=0.8,
+                         label=f"Averaged (n={len(time_windows_to_analyze)} windows)")
+    
+    # Add start/end markers with SAME SIZE and COLORED BY BEHAVIOR with GREEN/RED BORDERS
+    ax3.scatter(averaged_pc1[0], averaged_pc2[0], 
+               c=averaged_behavior[0], cmap=color_map, s=60, alpha=0.9, norm=behavior_norm,
+               edgecolors='green', linewidths=2, label='Start', zorder=11)
+    ax3.scatter(averaged_pc1[-1], averaged_pc2[-1], 
+               c=averaged_behavior[-1], cmap=color_map, s=60, alpha=0.9, norm=behavior_norm,
+               edgecolors='red', linewidths=2, label='End', zorder=11)
+    
+    # Add colorbar for behavior intensity
+    cbar3 = plt.colorbar(scatter3, ax=ax3, label=behavior_label, shrink=0.8)
+    
+    ax3.set_xlabel(f'PC{comp1_idx+1}')
+    ax3.set_ylabel(f'PC{comp2_idx+1}')
+    if behavior == 'movement':
+        ax3.set_title(f'PC Space - Movement Coloring (Averaged)')
+    else:
+        ax3.set_title(f'PC Space - Delta Power Coloring (Averaged)')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    ax3.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    ax3.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    # Bottom right: PC space with time gradient coloring
+    ax4 = fig.add_subplot(gs[2, 1])
+    
+    # Plot all PC points in light gray first
+    ax4.scatter(pc1, pc2, c='lightgray', s=8, alpha=0.2, label='All Other Times')
+    
+    # Plot ONLY the averaged trajectory points with time gradient colors (no connections)
+    scatter4 = ax4.scatter(averaged_pc1, averaged_pc2, 
+                         c=averaged_times, cmap='viridis', 
+                         s=60, alpha=0.9, norm=time_norm,
+                         edgecolors='black', linewidths=0.8,
+                         label=f"Averaged (n={len(time_windows_to_analyze)} windows)")
+    
+    # Add start/end markers with SAME SIZE and TIME-COLORED with GREEN/RED BORDERS
+    ax4.scatter(averaged_pc1[0], averaged_pc2[0], 
+               c=averaged_times[0], cmap='viridis', s=60, alpha=0.9, norm=time_norm,
+               edgecolors='green', linewidths=2, label='Start', zorder=11)
+    ax4.scatter(averaged_pc1[-1], averaged_pc2[-1], 
+               c=averaged_times[-1], cmap='viridis', s=60, alpha=0.9, norm=time_norm,
+               edgecolors='red', linewidths=2, label='End', zorder=11)
+    
+    # Add colorbar for time gradient
+    cbar4 = plt.colorbar(scatter4, ax=ax4, label='Relative Time (s)', shrink=0.8)
+    
+    ax4.set_xlabel(f'PC{comp1_idx+1}')
+    ax4.set_ylabel(f'PC{comp2_idx+1}')
+    ax4.set_title(f'PC Space - Time Gradient (Averaged)')
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+    ax4.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    ax4.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    # Overall title
+    behavior_type_title = "Movement" if behavior == 'movement' else "Delta Power"
+    fig.suptitle(f'{subject}: Averaged Time Windows Analysis ({behavior_type_title}) - {window_duration}s windows', 
+                fontsize=18, y=0.96)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    safe_name = f"averaged_{len(time_windows_to_analyze)}windows_{window_duration}s_{behavior}"
+    plot_path = os.path.join(output_folder, f'{subject}_{safe_name}_analysis.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print(f"Averaged time windows analysis plot saved: {plot_path}")
+    
+    # Calculate trajectory statistics
+    distances = np.sqrt(np.diff(averaged_pc1)**2 + np.diff(averaged_pc2)**2)
+    total_distance = np.sum(distances)
+    net_displacement = np.sqrt((averaged_pc1[-1] - averaged_pc1[0])**2 + 
+                             (averaged_pc2[-1] - averaged_pc2[0])**2)
+    tortuosity = total_distance / net_displacement if net_displacement > 0 else np.inf
+    
+    print(f"\n=== Averaged Trajectory Analysis Summary ===")
+    print(f"  Number of windows: {len(time_windows_to_analyze)}")
+    print(f"  Window duration: {window_duration}s")  
+    print(f"  Points per window: {min_points}")
+    print(f"  Total path length: {total_distance:.2f}")
+    print(f"  Net displacement: {net_displacement:.2f}")
+    print(f"  Tortuosity: {tortuosity:.2f}")
+    print(f"  Behavior range: {averaged_behavior.min():.2f} - {averaged_behavior.max():.2f}")
+    
+    return {
+        'averaged_pc1': averaged_pc1,
+        'averaged_pc2': averaged_pc2,
+        'averaged_behavior': averaged_behavior,
+        'averaged_times': averaged_times,
+        'individual_windows': {
+            'pc1': all_window_pc1,
+            'pc2': all_window_pc2,
+            'behavior': all_window_behavior,
+            'times': all_window_times
+        },
+        'window_duration': window_duration,
+        'num_windows': len(time_windows_to_analyze),
+        'points_per_window': min_points,
+        'behavior_type': behavior,
+        'trajectory_stats': {
+            'total_distance': total_distance,
+            'net_displacement': net_displacement,
+            'tortuosity': tortuosity
+        }
+    }

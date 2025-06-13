@@ -550,7 +550,7 @@ def load_analysis_results(metadata_path=None, output_folder=None):
             print(f" loaded from .npy ({loaded_variables[var_name].shape})")
             
         elif file_path.endswith('.npz'):
-            npz_data = np.load(file_path)
+            npz_data = np.load(file_path, allow_pickle=True)
             loaded_variables[var_name] = {key: npz_data[key] for key in npz_data.files}
             print(f" loaded from .npz (dict with {len(loaded_variables[var_name])} keys)")
             
