@@ -851,181 +851,154 @@ def analyze_state_specific_correlations(combined_counts, time_bins, sleep_mask, 
         'difference_stats': diff_stats
     }
 
-def plot_state_correlation_matrices(state_corr_results, np_results=None, max_neurons=100, 
-                                   value_range=(-0.4, 0.4), sort_by_MI=True, save_plots=False, output_folder=None):
+
+def plot_state_correlation_matrices(state_corr_results, np_results, max_neurons=None, 
+                                  value_range=(-0.7, 0.7), sorting='default', 
+                                  save_plots=True, output_folder=None, pca_results=None):
     """
-    Plot correlation matrices for sleep and wake states using matshow
+    Plot correlation matrices for sleep and wake states with different sorting options.
     
     Parameters:
-        state_corr_results: Results dictionary from analyze_state_specific_correlations
-        np_results: Results from analyze_sleep_wake_activity (for modulation index)
-        max_neurons: Maximum number of neurons to show (for readability)
-        value_range: Tuple of (min, max) values for color scale
-        sort_by_MI: Whether to sort neurons by modulation index (True) or use original order (False)
+    -----------
+    state_corr_results : dict
+        Results from analyze_state_specific_correlations
+    np_results : dict
+        Results from analyze_sleep_wake_activity containing modulation indices
+    max_neurons : int, optional
+        Maximum number of neurons to plot
+    value_range : tuple
+        Range for colormap (vmin, vmax)
+    sorting : str
+        Sorting method: 'default' (by cluster ID/depth), 'MI' (by modulation index), or 'PC' (by PC1)
+    save_plots : bool
+        Whether to save the plots
+    output_folder : str
+        Directory to save plots
+    pca_results : dict, optional
+        PCA results containing components for PC sorting
+        
+    Returns:
+    --------
+    matplotlib.figure.Figure : The created figure
     """
-    import numpy as np
     import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize
+    import numpy as np
     
-    # Extract correlation matrices
-    sleep_corr = state_corr_results['sleep_correlation_matrix'].copy()
-    wake_corr = state_corr_results['wake_correlation_matrix'].copy()
-    diff_corr = state_corr_results['difference_matrix'].copy()
+    sleep_corr = state_corr_results['sleep_correlation_matrix']
+    wake_corr = state_corr_results['wake_correlation_matrix']
     
-    # Extract stats
-    sleep_stats = state_corr_results['sleep_stats']
-    wake_stats = state_corr_results['wake_stats']
-    diff_stats = state_corr_results['difference_stats']
-    
-    # Limit number of neurons for visualization
+    # Determine number of neurons to plot
     n_neurons = sleep_corr.shape[0]
-    neurons_to_use = min(n_neurons, max_neurons)
+    if max_neurons is not None and n_neurons > max_neurons:
+        n_neurons = max_neurons
+        print(f"Limiting display to first {max_neurons} neurons")
     
-    # Sort by modulation index if requested and available
-    if sort_by_MI and np_results is not None and 'merged' in np_results:
-        print("Sorting neurons by sleep/wake modulation index")
-        
-        # Get modulation index
-        modulation_index = np_results['merged']['modulation_index']
-        
-        # Make sure sizes match
-        if len(modulation_index) != n_neurons:
-            print(f"Warning: Modulation index has {len(modulation_index)} neurons but correlation matrix has {n_neurons}")
-            print("Using original neuron ordering instead")
-            sort_indices = np.arange(n_neurons)
-        else:
-            # Sort from most sleep-selective to most wake-selective
-            sort_indices = np.argsort(modulation_index)
-            
-            # Apply sorting to matrices
-            sleep_corr = sleep_corr[np.ix_(sort_indices, sort_indices)]
-            wake_corr = wake_corr[np.ix_(sort_indices, sort_indices)]
-            diff_corr = diff_corr[np.ix_(sort_indices, sort_indices)]
-            
-            # Create a modulation index color bar for y-axis
-            mi_cmap = plt.cm.get_cmap('coolwarm')
-            mi_colors = mi_cmap((modulation_index[sort_indices[:neurons_to_use]] + 1) / 2)  # Normalize to 0-1
-    else:
-        # Use original order
+    # Get sorting indices based on sorting parameter
+    if sorting == 'default':
+        # Default sorting by cluster ID (depth)
         sort_indices = np.arange(n_neurons)
+        sort_label = "Default (Depth)"
         
-    # Limit to max_neurons
-    if n_neurons > neurons_to_use:
-        print(f"Limiting display to {neurons_to_use} neurons (out of {n_neurons})")
-        if sort_by_MI and np_results is not None and 'merged' in np_results:
-            # Already sorted, just take first N
-            sleep_corr = sleep_corr[:neurons_to_use, :neurons_to_use]
-            wake_corr = wake_corr[:neurons_to_use, :neurons_to_use]
-            diff_corr = diff_corr[:neurons_to_use, :neurons_to_use]
+    elif sorting == 'MI':
+        # Sort by modulation index
+        if 'merged' in np_results:
+            modulation_indices = np_results['merged']['modulation_index'][:n_neurons]
+            sort_indices = np.argsort(modulation_indices)  # Low to high MI
+            sort_label = "Modulation Index"
         else:
-            # Take first N from original ordering
-            sleep_corr = sleep_corr[:neurons_to_use, :neurons_to_use]
-            wake_corr = wake_corr[:neurons_to_use, :neurons_to_use]
-            diff_corr = diff_corr[:neurons_to_use, :neurons_to_use]
-    
-    # Create figure with three subplots
-    if sort_by_MI and np_results is not None and 'merged' in np_results:
-        # Create figure with space for MI color bar
-        fig = plt.figure(figsize=(12, 4))
-        gs = plt.GridSpec(1, 4, width_ratios=[20, 20, 20, 1])
-        ax1 = plt.subplot(gs[0])
-        ax2 = plt.subplot(gs[1])
-        ax3 = plt.subplot(gs[2])
-        ax_mi = plt.subplot(gs[3])
+            print("Warning: Modulation indices not found, using default sorting")
+            sort_indices = np.arange(n_neurons)
+            sort_label = "Default (MI not available)"
+            
+    elif sorting == 'PC':
+        # Sort by PC1 scores (not loadings)
+        if pca_results is not None:
+            if 'pca_result' in pca_results:
+                pc1_scores = pca_results['pca_result'][:, 0]  # PC1 scores for all time points
+                # Use mean PC1 score for each neuron (across time)
+                # This assumes neurons are rows in the correlation matrix, same order as in combined_matrix
+                # We need the mean PC1 activity pattern to sort neurons
+                # Actually, let's sort by the first PC1 score as a proxy
+                sort_indices = np.argsort(pc1_scores[:n_neurons] if len(pc1_scores) >= n_neurons else pc1_scores)
+                sort_label = "PC1 Score"
+            else:
+                sort_indices = np.arange(n_neurons)
+                sort_label = "Default (PCA not available)"
+        elif 'pca_results' in globals():
+            pca_results_global = globals()['pca_results']
+            if 'pca_result' in pca_results_global:
+                pc1_scores = pca_results_global['pca_result'][:, 0]
+                sort_indices = np.argsort(pc1_scores[:n_neurons] if len(pc1_scores) >= n_neurons else pc1_scores)
+                sort_label = "PC1 Score"
+            else:
+                sort_indices = np.arange(n_neurons)
+                sort_label = "Default (PCA not available)"
+        else:
+            sort_indices = np.arange(n_neurons)
+            sort_label = "Default (PCA not available)"
     else:
-        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
-        ax1, ax2, ax3 = axes
+        print("Warning: PCA results not found, using default sorting")
+        sort_indices = np.arange(n_neurons)
+        sort_label = "Default (PCA not available)"
     
-    # Define color range
-    vmin, vmax = value_range
+    # Apply sorting to correlation matrices
+    sleep_corr_sorted = sleep_corr[sort_indices][:, sort_indices][:n_neurons, :n_neurons]
+    wake_corr_sorted = wake_corr[sort_indices][:, sort_indices][:n_neurons, :n_neurons]
     
-    # For difference, calculate symmetric range based on data
-    diff_max = max(abs(np.nanmin(diff_corr)), abs(np.nanmax(diff_corr)))
-    diff_range = (-diff_max, diff_max)
+    # Create difference matrix
+    diff_corr_sorted = sleep_corr_sorted - wake_corr_sorted
     
-    # Plot sleep correlation matrix
-    im1 = ax1.matshow(sleep_corr, cmap='RdBu_r', vmin=vmin, vmax=vmax)
-    ax1.set_title(f'Sleep State Correlations\nMean: {sleep_stats["mean"]:.3f}', fontsize=14)
-    ax1.set_xlabel('Neuron Index')
-    ax1.set_ylabel('Neuron Index')
+    # Create the plot - ORIGINAL 3-MATRIX LAYOUT
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # Add grid lines
-    ax1.set_xticks(np.arange(-.5, sleep_corr.shape[0], 10), minor=True)
-    ax1.set_yticks(np.arange(-.5, sleep_corr.shape[1], 10), minor=True)
-    ax1.grid(which='minor', color='w', linestyle='-', linewidth=0.5, alpha=0.3)
+    # Sleep correlation matrix
+    im1 = axes[0].imshow(sleep_corr_sorted, cmap='RdBu_r', 
+                        vmin=value_range[0], vmax=value_range[1], aspect='equal')
+    axes[0].set_title(f'Sleep State Correlations\n(Sorted by {sort_label})')
+    axes[0].set_xlabel('Neuron Index (Sorted)')
+    axes[0].set_ylabel('Neuron Index (Sorted)')
+    plt.colorbar(im1, ax=axes[0], label='Correlation')
     
-    cbar1 = plt.colorbar(im1, ax=ax1, shrink=0.8)
-    cbar1.set_label('Correlation')
+    # Wake correlation matrix
+    im2 = axes[1].imshow(wake_corr_sorted, cmap='RdBu_r', 
+                        vmin=value_range[0], vmax=value_range[1], aspect='equal')
+    axes[1].set_title(f'Wake State Correlations\n(Sorted by {sort_label})')
+    axes[1].set_xlabel('Neuron Index (Sorted)')
+    axes[1].set_ylabel('Neuron Index (Sorted)')
+    plt.colorbar(im2, ax=axes[1], label='Correlation')
     
-    # Plot wake correlation matrix
-    im2 = ax2.matshow(wake_corr, cmap='RdBu_r', vmin=vmin, vmax=vmax)
-    ax2.set_title(f'Wake State Correlations\nMean: {wake_stats["mean"]:.3f}', fontsize=14)
-    ax2.set_xlabel('Neuron Index')
+    # Difference matrix (Sleep - Wake)
+    diff_range = max(abs(np.nanmin(diff_corr_sorted)), abs(np.nanmax(diff_corr_sorted)))
+    im3 = axes[2].imshow(diff_corr_sorted, cmap='RdBu_r', 
+                        vmin=-diff_range, vmax=diff_range, aspect='equal')
+    axes[2].set_title(f'Difference (Sleep - Wake)\n(Sorted by {sort_label})')
+    axes[2].set_xlabel('Neuron Index (Sorted)')
+    axes[2].set_ylabel('Neuron Index (Sorted)')
+    plt.colorbar(im3, ax=axes[2], label='Correlation Difference')
     
-    # Add grid lines
-    ax2.set_xticks(np.arange(-.5, wake_corr.shape[0], 10), minor=True)
-    ax2.set_yticks(np.arange(-.5, wake_corr.shape[1], 10), minor=True)
-    ax2.grid(which='minor', color='w', linestyle='-', linewidth=0.5, alpha=0.3)
+    # Print some statistics about the sorting
+    if sorting == 'PC':
+        if 'pc1_loadings' in locals():
+            print(f"PC1 loading range: {np.min(pc1_loadings):.3f} to {np.max(pc1_loadings):.3f}")
+    elif sorting == 'MI':
+        if 'modulation_indices' in locals():
+            print(f"Modulation index range: {np.min(modulation_indices):.3f} to {np.max(modulation_indices):.3f}")
     
-    cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8)
-    cbar2.set_label('Correlation')
+    # Overall title
+    fig.suptitle(f'State-Specific Correlation Matrices ({n_neurons} neurons, sorted by {sort_label})', 
+                fontsize=16, y=0.98)
     
-    # Plot difference matrix
-    im3 = ax3.matshow(diff_corr, cmap='RdBu_r', vmin=diff_range[0], vmax=diff_range[1])
-    ax3.set_title(f'Difference (Sleep - Wake)\nMean: {diff_stats["mean"]:.3f}', fontsize=14)
-    ax3.set_xlabel('Neuron Index')
-    
-    # Add grid lines
-    ax3.set_xticks(np.arange(-.5, diff_corr.shape[0], 10), minor=True)
-    ax3.set_yticks(np.arange(-.5, diff_corr.shape[1], 10), minor=True)
-    ax3.grid(which='minor', color='w', linestyle='-', linewidth=0.5, alpha=0.3)
-    
-    cbar3 = plt.colorbar(im3, ax=ax3, shrink=0.8)
-    cbar3.set_label('Correlation Difference')
-    
-    # Add modulation index color bar if sorted by MI
-    if sort_by_MI and np_results is not None and 'merged' in np_results and len(modulation_index) == n_neurons:
-        # Create modulation index color bar
-        mi_sorted = modulation_index[sort_indices[:neurons_to_use]]
-        mi_plot = np.expand_dims(mi_sorted, axis=1)
-        
-        # Plot the modulation index as a vertical colorbar
-        im_mi = ax_mi.matshow(mi_plot, cmap='coolwarm', aspect='auto',
-                             vmin=-1, vmax=1)
-        ax_mi.set_title('MI')
-        ax_mi.set_xticks([])
-        
-        # Only show a few y-tick labels to avoid crowding
-        step = max(1, neurons_to_use // 10)
-        ax_mi.set_yticks(np.arange(0, neurons_to_use, step))
-        ax_mi.set_yticklabels([])  # Remove tick labels
-        
-        # Add a colorbar to explain the modulation index
-        cbar_mi = plt.colorbar(im_mi, ax=ax_mi, shrink=0.8)
-        cbar_mi.set_label('Modulation Index\n(Wake - Sleep)/(Wake + Sleep)')
-        
-        # Add annotations for wake and sleep selectivity
-        ax_mi.text(0.5, -0.05, 'Sleep-selective', transform=ax_mi.transAxes, 
-                  ha='center', va='top', color='blue')
-        ax_mi.text(0.5, 1.05, 'Wake-selective', transform=ax_mi.transAxes, 
-                  ha='center', va='bottom', color='red')
-        
-    # Set common title based on sorting method
-    if sort_by_MI and np_results is not None and 'merged' in np_results and len(modulation_index) == n_neurons:
-        plt.suptitle('Neural Correlation Matrices by Behavioral State\n(Sorted by Sleep/Wake Modulation Index)', 
-                    fontsize=16, y=1.05)
-    else:
-        plt.suptitle('Neural Correlation Matrices by Behavioral State', 
-                    fontsize=16, y=1.05)
-    
-    # Improve spacing
     plt.tight_layout()
     
-    if save_plots:
-        if output_folder is None:
-            output_folder = '.'
-        plt.savefig(os.path.join(output_folder, "state_correlation_matrices.png"), dpi=300, bbox_inches='tight')
-
+    # Save the plot
+    if save_plots and output_folder:
+        plot_filename = f'state_correlation_matrices_sorted_{sorting.lower()}_{n_neurons}neurons.png'
+        plot_path = os.path.join(output_folder, plot_filename)
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"State correlation matrices plot saved: {plot_path}")
+    
+    plt.show()
+    
     return fig
 
 
@@ -1646,130 +1619,241 @@ def visualize_partner_stability_results(rrf_results, state_corr_results, np_resu
         'completed': True,
         'output_dir': output_dir
     }
-
-
 def plot_individual_correlograms(population_corr_results, n_random=10, specific_neuron_ids=None, 
-                                output_folder=None, figsize_per_subplot=(4, 3)):
+                               output_folder=None, filter_hz=None, figsize=(15, 10)):
     """
-    Plot cross-correlograms for individual neurons showing correlation vs lag.
+    Plot individual cross-correlograms with baseline-corrected center of mass marked.
     
     Parameters:
         population_corr_results: Results from correlate_with_population_average
         n_random: Number of random neurons to plot (if specific_neuron_ids not provided)
-        specific_neuron_ids: List of specific neuron indices to plot (overrides n_random)
+        specific_neuron_ids: List of specific neuron IDs to plot
         output_folder: Directory to save plot
-        figsize_per_subplot: Size of each individual subplot
+        filter_hz: Low-pass filter frequency in Hz (None for no filtering)
+        figsize: Figure size
     """
     import matplotlib.pyplot as plt
     import numpy as np
+    from scipy.signal import butter, filtfilt
     
     # Extract data
     neuron_correlations = population_corr_results['neuron_correlations']  # (n_neurons, n_lags)
-    lag_offsets = population_corr_results['lag_offsets']  # (n_lags,)
+    lag_offsets = population_corr_results['lag_offsets']
     peak_correlations = population_corr_results['peak_correlations']
     peak_lags = population_corr_results['peak_lags']
     active_indices = population_corr_results['active_neuron_indices']
     
-    # Determine which neurons to plot
+    n_neurons, n_lags = neuron_correlations.shape
+    
+    # Apply low-pass filtering if requested
+    filtered_correlations = neuron_correlations.copy()
+    
+    if filter_hz is not None:
+        print(f"Applying {filter_hz} Hz low-pass filter to correlograms...")
+        
+        # Calculate sampling rate from lag_offsets
+        lag_step = lag_offsets[1] - lag_offsets[0]  # Step size in ms
+        fs = 1000.0 / lag_step  # Sampling rate in Hz
+        
+        # Design low-pass filter
+        nyquist = fs / 2
+        if filter_hz >= nyquist:
+            print(f"Warning: Filter frequency ({filter_hz} Hz) >= Nyquist frequency ({nyquist:.1f} Hz). No filtering applied.")
+            filter_hz = None  # Disable filtering
+        else:
+            # Butterworth low-pass filter
+            b, a = butter(N=4, Wn=filter_hz/nyquist, btype='low')
+            
+            # Apply filter to each neuron's correlogram
+            for i in range(n_neurons):
+                try:
+                    filtered_correlations[i, :] = filtfilt(b, a, neuron_correlations[i, :])
+                except Exception as e:
+                    print(f"Warning: Filtering failed for neuron {i}: {e}")
+                    filtered_correlations[i, :] = neuron_correlations[i, :]
+    
+    # Calculate baseline-corrected center of mass for each neuron's correlogram
+    center_of_mass = np.zeros(n_neurons)
+    
+    for i in range(n_neurons):
+        correlogram = filtered_correlations[i, :]
+        
+        # Use 10th percentile as baseline
+        baseline = np.percentile(correlogram, 10)
+        excess_correlogram = correlogram - baseline
+        
+        # Only use positive excess correlations for center of mass
+        positive_mask = excess_correlogram > 0
+        
+        if np.sum(positive_mask) > 0 and np.sum(excess_correlogram[positive_mask]) > 0:
+            center_of_mass[i] = np.average(lag_offsets[positive_mask], weights=excess_correlogram[positive_mask])
+        else:
+            # Fallback to peak position
+            peak_idx = np.argmax(correlogram)
+            center_of_mass[i] = lag_offsets[peak_idx]
+    
+    # Select neurons to plot
     if specific_neuron_ids is not None:
-        # Map provided neuron IDs to indices in our active neuron array
-        neurons_to_plot = []
+        # Find indices for specific neuron IDs
+        plot_indices = []
+        plot_neuron_ids = []
         for neuron_id in specific_neuron_ids:
-            if neuron_id in active_indices:
-                idx = np.where(active_indices == neuron_id)[0][0]
-                neurons_to_plot.append(idx)
+            idx = np.where(active_indices == neuron_id)[0]
+            if len(idx) > 0:
+                plot_indices.append(idx[0])
+                plot_neuron_ids.append(neuron_id)
             else:
-                print(f"Warning: Neuron {neuron_id} not found in active neurons")
-        plot_title_suffix = f"(Specific Neurons: {specific_neuron_ids})"
+                print(f"Warning: Neuron ID {neuron_id} not found in active neurons")
+        
+        if len(plot_indices) == 0:
+            print("Error: No valid neuron IDs found")
+            return
+            
+        plot_indices = np.array(plot_indices)
+        plot_neuron_ids = np.array(plot_neuron_ids)
+        
     else:
         # Select random neurons
-        n_available = len(active_indices)
-        n_to_plot = min(n_random, n_available)
-        neurons_to_plot = np.random.choice(n_available, n_to_plot, replace=False)
-        plot_title_suffix = f"({n_to_plot} Random Neurons)"
+        if n_random > n_neurons:
+            n_random = n_neurons
+            print(f"Reduced n_random to {n_random} (total available neurons)")
+        
+        plot_indices = np.random.choice(n_neurons, size=n_random, replace=False)
+        plot_neuron_ids = active_indices[plot_indices]
     
-    if len(neurons_to_plot) == 0:
-        print("No neurons to plot!")
-        return
+    n_to_plot = len(plot_indices)
     
-    # Calculate global y-axis limits for consistent scaling
-    all_correlations = neuron_correlations[neurons_to_plot]
-    y_min = 0.05 #np.min(all_correlations) * 1.1
-    y_max = np.max(all_correlations) * 1.1
+    # Calculate subplot layout
+    n_cols = min(5, n_to_plot)
+    n_rows = int(np.ceil(n_to_plot / n_cols))
     
-    # Create subplot grid
-    n_neurons = len(neurons_to_plot)
-    cols = min(4, n_neurons)  # Max 4 columns
-    rows = int(np.ceil(n_neurons / cols))
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * figsize_per_subplot[0], rows * figsize_per_subplot[1]))
-    if n_neurons == 1:
-        axes = [axes]
-    elif rows == 1:
-        axes = axes.reshape(1, -1)
+    # Create the plot
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
     axes = axes.flatten()
     
-    # Plot each neuron
-    for i, neuron_idx in enumerate(neurons_to_plot):
+    # Plot each selected neuron
+    for i, (idx, neuron_id) in enumerate(zip(plot_indices, plot_neuron_ids)):
         ax = axes[i]
         
-        # Get this neuron's correlogram
-        correlations = neuron_correlations[neuron_idx]
-        original_neuron_id = active_indices[neuron_idx]
+        # Get the correlogram (original or filtered)
+        correlogram = filtered_correlations[idx, :]
+        original_correlogram = neuron_correlations[idx, :]
         
         # Plot the correlogram
-        ax.plot(lag_offsets, correlations, 'b-', linewidth=1.5, alpha=0.8)
+        if filter_hz is not None:
+            # Plot both original (light) and filtered (dark)
+            ax.plot(lag_offsets, original_correlogram, 'lightgray', alpha=0.7, linewidth=1, label='Original')
+            ax.plot(lag_offsets, correlogram, 'blue', linewidth=2, label=f'Filtered ({filter_hz}Hz)')
+        else:
+            ax.plot(lag_offsets, correlogram, 'blue', linewidth=2)
         
-        # Mark the peak
-        peak_lag = peak_lags[neuron_idx]
-        peak_corr = peak_correlations[neuron_idx]
-        ax.plot(peak_lag, peak_corr, 'ro', markersize=6, markerfacecolor='red', markeredgecolor='darkred')
+        # Mark baseline-corrected center of mass with red dot
+        com_value = center_of_mass[idx]
+        com_idx = np.argmin(np.abs(lag_offsets - com_value))
+        com_correlation = correlogram[com_idx]
+        ax.plot(com_value, com_correlation, 'ro', markersize=5, label=f'Baseline-Corrected CoM')
         
-        # Add zero lines
-        ax.axhline(0, color='k', linestyle='--', alpha=0.3)
-        ax.axvline(0, color='k', linestyle='--', alpha=0.3)
+        # Mark peak correlation with smaller marker for comparison
+        peak_corr = peak_correlations[idx]
+        peak_lag = peak_lags[idx]
+        peak_idx = np.argmin(np.abs(lag_offsets - peak_lag))
+        peak_correlation_value = original_correlogram[peak_idx]
+
         
-        # Set consistent scaling
-        ax.set_ylim(y_min, y_max)
-        ax.set_xlim(lag_offsets[0], lag_offsets[-1])
+        # Show baseline as horizontal line
+        baseline = np.percentile(correlogram, 10)
+        ax.axhline(baseline, color='orange', linestyle=':', alpha=0.7, label=f'Baseline (10th %ile)')
         
-        # Labels and title
+        # Add zero lag line
+        ax.axvline(0, color='black', linestyle='--', alpha=0.5)
+        ax.axhline(0, color='black', linestyle='--', alpha=0.3)
+        
+        # Formatting
         ax.set_xlabel('Lag (ms)')
         ax.set_ylabel('Correlation')
-        ax.set_title(f'Neuron {original_neuron_id}\nPeak: {peak_corr:.3f} @ {peak_lag:.0f}ms')
-        ax.grid(True, alpha=0.3)
+        
+        # Create title with both CoM and peak info
+        title = f'Neuron {neuron_id}\n'
+        title += f'Baseline-Corr CoM: {com_value:.1f}ms ({com_correlation:.3f})\n'
+        title += f'Peak: {peak_lag:.1f}ms ({peak_corr:.3f})'
+        ax.set_title(title, fontsize=10)
+        
+        # Add legend for first plot
+        if i == 0:
+            ax.legend(fontsize=8, loc='upper right')
+        
+        # Set consistent y-limits across all plots
+        ax.set_ylim([np.min(neuron_correlations) * 1.1, np.max(neuron_correlations) * 1.1])
     
     # Hide unused subplots
-    for i in range(len(neurons_to_plot), len(axes)):
+    for i in range(n_to_plot, len(axes)):
         axes[i].set_visible(False)
     
-    plt.suptitle(f'Individual Population Cross-Correlograms {plot_title_suffix}', 
-                 fontsize=14, y=0.98)
+    # Overall title
+    if filter_hz is not None:
+        suptitle = f'Individual Cross-Correlograms with Population (Filtered at {filter_hz} Hz)\nRed dot = Baseline-Corrected Center of Mass, Black triangle = Peak'
+    else:
+        suptitle = f'Individual Cross-Correlograms with Population\nRed dot = Baseline-Corrected Center of Mass, Black triangle = Peak'
+    
+    fig.suptitle(suptitle, fontsize=14, y=0.98)
+    
     plt.tight_layout()
+    plt.subplots_adjust(top=0.92)  # Make room for suptitle
     
     if output_folder:
-        filename = f"individual_correlograms_{'_'.join(map(str, specific_neuron_ids)) if specific_neuron_ids else 'random'}.png"
+        if specific_neuron_ids is not None:
+            neuron_suffix = f"_neurons_{'_'.join(map(str, specific_neuron_ids))}"
+        else:
+            neuron_suffix = f"_random_{n_random}"
+        
+        filter_suffix = f"_filtered_{filter_hz}Hz" if filter_hz is not None else "_unfiltered"
+        filename = f"individual_correlograms{neuron_suffix}{filter_suffix}.png"
         plt.savefig(f"{output_folder}/{filename}", dpi=300, bbox_inches='tight')
+        print(f"Saved individual correlograms to {filename}")
     
     plt.show()
     
-    # Print summary
-    print(f"\nPlotted {len(neurons_to_plot)} neurons:")
-    for i, neuron_idx in enumerate(neurons_to_plot):
-        original_id = active_indices[neuron_idx]
-        peak_corr = peak_correlations[neuron_idx]
-        peak_lag = peak_lags[neuron_idx]
-        print(f"  Neuron {original_id}: Peak {peak_corr:.3f} at {peak_lag:.0f}ms lag")
+    # Print summary for plotted neurons
+    print(f"\n=== INDIVIDUAL CORRELOGRAM ANALYSIS ===")
+    print(f"Plotted {n_to_plot} neurons")
+    if filter_hz is not None:
+        print(f"Applied {filter_hz} Hz low-pass filter")
+    
+    print(f"\nNeuron details (baseline-corrected center of mass):")
+    for i, (idx, neuron_id) in enumerate(zip(plot_indices, plot_neuron_ids)):
+        com_value = center_of_mass[idx]
+        peak_corr = peak_correlations[idx]
+        peak_lag = peak_lags[idx]
+        com_peak_diff = abs(com_value - peak_lag)
+        baseline = np.percentile(filtered_correlations[idx, :], 10)
+        
+        print(f"  Neuron {neuron_id}: Baseline-Corr CoM = {com_value:.1f}ms, Peak = {peak_lag:.1f}ms ({peak_corr:.3f}), |CoM-Peak| = {com_peak_diff:.1f}ms, Baseline = {baseline:.3f}")
+    
+    # Calculate and report average differences
+    plotted_com_values = center_of_mass[plot_indices]
+    plotted_peak_lags = peak_lags[plot_indices]
+    avg_com_peak_diff = np.mean(np.abs(plotted_com_values - plotted_peak_lags))
+    
+    print(f"\nAverage |Baseline-Corrected CoM - Peak Lag| difference: {avg_com_peak_diff:.1f}ms")
+    
+    return {
+        'plotted_neuron_ids': plot_neuron_ids,
+        'plotted_indices': plot_indices,
+        'center_of_mass': center_of_mass[plot_indices],
+        'peak_correlations': peak_correlations[plot_indices],
+        'peak_lags': peak_lags[plot_indices],
+        'filter_hz': filter_hz
+    }
 
-def plot_peak_lag_stripe_map(population_corr_results, peak_window_ms=5, output_folder=None, 
+def plot_peak_lag_stripe_map(population_corr_results, filter_hz=None, output_folder=None, 
                             figsize=(12, 8), max_neurons=None):
     """
-    Plot neurons as white rows with colored stripes only at peak lag positions.
-    Color intensity represents peak correlation strength.
+    Plot neurons as rows with full cross-correlograms colored by correlation strength.
+    Neurons are sorted by baseline-corrected center of mass of their correlation function.
     
     Parameters:
         population_corr_results: Results from correlate_with_population_average
-        peak_window_ms: Window around peak to color (±peak_window_ms)
+        filter_hz: Low-pass filter frequency in Hz (None for no filtering)
         output_folder: Directory to save plot
         figsize: Figure size
         max_neurons: Maximum number of neurons to show (for readability)
@@ -1777,165 +1861,620 @@ def plot_peak_lag_stripe_map(population_corr_results, peak_window_ms=5, output_f
     import matplotlib.pyplot as plt
     import numpy as np
     from matplotlib.colors import Normalize
+    from scipy.signal import butter, filtfilt
     
     # Extract data
+    neuron_correlations = population_corr_results['neuron_correlations']  # (n_neurons, n_lags)
     lag_offsets = population_corr_results['lag_offsets']
-    peak_lags = population_corr_results['peak_lags']
     peak_correlations = population_corr_results['peak_correlations']
+    peak_lags = population_corr_results['peak_lags']
     active_indices = population_corr_results['active_neuron_indices']
     
-    n_neurons = len(peak_lags)
-    n_lags = len(lag_offsets)
+    n_neurons, n_lags = neuron_correlations.shape
+    print(f"Processing {n_neurons} neurons with {n_lags} lag points")
+    
+    # Apply low-pass filtering if requested
+    filtered_correlations = neuron_correlations.copy()
+    
+    if filter_hz is not None:
+        print(f"Applying {filter_hz} Hz low-pass filter...")
+        
+        # Calculate sampling rate from lag_offsets
+        lag_step = lag_offsets[1] - lag_offsets[0]  # Step size in ms
+        fs = 1000.0 / lag_step  # Sampling rate in Hz
+        
+        # Design low-pass filter
+        nyquist = fs / 2
+        if filter_hz >= nyquist:
+            print(f"Warning: Filter frequency ({filter_hz} Hz) >= Nyquist frequency ({nyquist:.1f} Hz). No filtering applied.")
+        else:
+            # Butterworth low-pass filter
+            b, a = butter(N=4, Wn=filter_hz/nyquist, btype='low')
+            
+            # Apply filter to each neuron's correlogram
+            for i in range(n_neurons):
+                # Use filtfilt for zero-phase filtering
+                try:
+                    filtered_correlations[i, :] = filtfilt(b, a, neuron_correlations[i, :])
+                except Exception as e:
+                    print(f"Warning: Filtering failed for neuron {i}: {e}")
+                    # Keep original if filtering fails
+                    filtered_correlations[i, :] = neuron_correlations[i, :]
+            
+            print(f"Low-pass filtering completed at {filter_hz} Hz")
+    
+    # Calculate baseline-corrected center of mass for each neuron's correlogram
+    center_of_mass = np.zeros(n_neurons)
+    
+    for i in range(n_neurons):
+        correlogram = filtered_correlations[i, :]
+        
+        # Use 10th percentile as baseline
+        baseline = np.percentile(correlogram, 10)
+        excess_correlogram = correlogram - baseline
+        
+        # Only use positive excess correlations for center of mass
+        positive_mask = excess_correlogram > 0
+        
+        if np.sum(positive_mask) > 0 and np.sum(excess_correlogram[positive_mask]) > 0:
+            center_of_mass[i] = np.average(lag_offsets[positive_mask], weights=excess_correlogram[positive_mask])
+        else:
+            # Fallback to peak position
+            peak_idx = np.argmax(correlogram)
+            center_of_mass[i] = lag_offsets[peak_idx]
+    
+    print(f"Baseline-corrected center of mass range: {np.min(center_of_mass):.1f} to {np.max(center_of_mass):.1f} ms")
     
     # Limit number of neurons for readability
     if max_neurons and n_neurons > max_neurons:
-        # Sample neurons evenly across the peak lag range
-        sort_indices = np.argsort(peak_lags)
+        # Sample neurons evenly across the center of mass range
+        sort_indices_temp = np.argsort(center_of_mass)
         step = n_neurons // max_neurons
-        selected_indices = sort_indices[::step][:max_neurons]
-        peak_lags = peak_lags[selected_indices]
+        selected_indices = sort_indices_temp[::step][:max_neurons]
+        
+        # Apply selection
+        filtered_correlations = filtered_correlations[selected_indices]
+        center_of_mass = center_of_mass[selected_indices]
         peak_correlations = peak_correlations[selected_indices]
+        peak_lags = peak_lags[selected_indices]
         active_indices = active_indices[selected_indices]
         n_neurons = len(selected_indices)
-        print(f"Showing {n_neurons} neurons (sampled from {len(sort_indices)})")
+        print(f"Showing {n_neurons} neurons (sampled from {len(sort_indices_temp)})")
     
-    # Sort neurons by peak lag (ascending: most negative first)
-    sort_indices = np.argsort(peak_lags)
-    sorted_peak_lags = peak_lags[sort_indices]
+    # Sort neurons by center of mass (ascending: most negative first)
+    sort_indices = np.argsort(center_of_mass)
+    sorted_correlations = filtered_correlations[sort_indices]
+    sorted_center_of_mass = center_of_mass[sort_indices]
     sorted_peak_correlations = peak_correlations[sort_indices]
+    sorted_peak_lags = peak_lags[sort_indices]
     sorted_neuron_ids = active_indices[sort_indices]
     
-    # Create the stripe matrix (all zeros = white background)
-    stripe_matrix = np.zeros((n_neurons, n_lags))
+    # Prepare the correlation matrix for plotting
+    # Use the full correlograms, not just peaks
+    correlation_matrix = sorted_correlations
     
-    # Fill in stripes only at peak lag positions
-    for neuron_idx in range(n_neurons):
-        peak_lag = sorted_peak_lags[neuron_idx]
-        peak_corr = sorted_peak_correlations[neuron_idx]
-        
-        # Find lag indices within peak_window_ms of the peak
-        lag_distances = np.abs(lag_offsets - peak_lag)
-        within_window = lag_distances <= peak_window_ms
-        
-        if np.any(within_window):
-            # Set the stripe intensity to the peak correlation value
-            stripe_matrix[neuron_idx, within_window] = peak_corr
+    # Calculate color scaling based on the range of correlation values
+    max_abs_corr = np.max(np.abs(correlation_matrix))
+    min_corr = np.min(correlation_matrix)
+    max_corr = np.max(correlation_matrix)
+    
+    print(f"Correlation range: {min_corr:.3f} to {max_corr:.3f}")
+    print(f"Max absolute correlation: {max_abs_corr:.3f}")
     
     # Create the plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': [4, 1]})
     
-    # Create custom colormap for the stripes
-    # Use absolute values for color intensity, but preserve sign information
-    max_abs_corr = np.max(np.abs(sorted_peak_correlations))
-    
-    # Main stripe plot
-    im = ax1.imshow(stripe_matrix, aspect='auto', cmap='Reds', 
+    # Main correlogram heatmap
+    # Use viridis colormap
+    im = ax1.matshow(correlation_matrix, aspect='auto', cmap='inferno', 
                    extent=[lag_offsets[0], lag_offsets[-1], n_neurons, 0],
-                   vmin=0, vmax=max_abs_corr)
-    
-    # For negative correlations, overlay with blue stripes
-    negative_mask = sorted_peak_correlations < 0
-    if np.any(negative_mask):
-        # Create blue stripes for negative correlations
-        blue_stripe_matrix = np.zeros_like(stripe_matrix)
-        for neuron_idx in range(n_neurons):
-            if negative_mask[neuron_idx]:
-                peak_lag = sorted_peak_lags[neuron_idx]
-                peak_corr = abs(sorted_peak_correlations[neuron_idx])  # Use absolute value for intensity
-                
-                lag_distances = np.abs(lag_offsets - peak_lag)
-                within_window = lag_distances <= peak_window_ms
-                
-                if np.any(within_window):
-                    blue_stripe_matrix[neuron_idx, within_window] = peak_corr
-        
-        # Overlay blue stripes with transparency
-        blue_stripes = np.ma.masked_where(blue_stripe_matrix == 0, blue_stripe_matrix)
-        ax1.imshow(blue_stripes, aspect='auto', cmap='Blues', alpha=0.8,
-                  extent=[lag_offsets[0], lag_offsets[-1], n_neurons, 0],
-                  vmin=0, vmax=max_abs_corr)
+                   vmin=-max_abs_corr, vmax=max_abs_corr, interpolation='nearest')
     
     # Formatting for main plot
     ax1.set_xlabel('Lag (ms)')
-    ax1.set_ylabel('Neurons (sorted by peak lag)')
-    ax1.set_title(f'Peak Lag Positions\n(±{peak_window_ms}ms stripes, intensity = |peak correlation|)')
+    ax1.set_ylabel('Neurons (sorted by baseline-corrected center of mass)')
+    
+    # Create title based on filtering
+    if filter_hz is not None:
+        title = f'Cross-Correlograms with Population\n(Low-pass filtered at {filter_hz} Hz, sorted by baseline-corrected CoM)'
+    else:
+        title = 'Cross-Correlograms with Population\n(Sorted by baseline-corrected center of mass)'
+    
+    ax1.set_title(title)
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax1, shrink=0.8)
-    cbar.set_label('|Peak Correlation|')
+    cbar.set_label('Correlation Coefficient')
     
     # Add zero lag line
-    ax1.axvline(0, color='black', linestyle='-', alpha=0.5, linewidth=1)
+    ax1.axvline(0, color='black', linestyle='-', alpha=0.7, linewidth=1)
     
-    # Side plot: Peak lag distribution
+    # Side plot: Center of mass distribution
     colors = ['blue' if corr < 0 else 'red' for corr in sorted_peak_correlations]
-    ax2.barh(range(n_neurons), sorted_peak_lags, height=1, 
-             color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+    bars = ax2.barh(range(n_neurons), sorted_center_of_mass, height=1, 
+                   color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+    
     ax2.axvline(0, color='black', linestyle='-', alpha=0.8)
-    ax2.set_xlabel('Peak Lag (ms)')
+    ax2.set_xlabel('Center of Mass (ms)')
     ax2.set_ylabel('Neurons')
-    ax2.set_title('Peak Lag\nDistribution')
+    ax2.set_title('Baseline-Corrected\nCenter of Mass')
     ax2.set_ylim(n_neurons, 0)  # Match main plot
-    
-    # Add some neuron ID labels (every Nth neuron to avoid crowding)
-    if n_neurons <= 50:
-        label_step = 5
-    elif n_neurons <= 200:
-        label_step = 10
-    else:
-        label_step = max(1, n_neurons // 20)
-    
-    for i in range(0, n_neurons, label_step):
-        neuron_id = sorted_neuron_ids[i]
-        peak_corr = sorted_peak_correlations[i]
-        ax1.text(lag_offsets[-1] * 1.02, i, f'{neuron_id}\n({peak_corr:.2f})', 
-                va='center', ha='left', fontsize=8, alpha=0.7)
     
     plt.tight_layout()
     
     if output_folder:
-        plt.savefig(f"{output_folder}/peak_lag_stripe_map.png", dpi=300, bbox_inches='tight')
+        filter_suffix = f"_filtered_{filter_hz}Hz" if filter_hz is not None else "_unfiltered"
+        plt.savefig(f"{output_folder}/cross_correlogram_heatmap{filter_suffix}.png", dpi=300, bbox_inches='tight')
     
     plt.show()
     
     # Print summary statistics
-    print(f"\n=== PEAK LAG STRIPE ANALYSIS ===")
+    print(f"\n=== CROSS-CORRELOGRAM HEATMAP ANALYSIS ===")
     print(f"Neurons analyzed: {n_neurons}")
-    print(f"Peak lag range: {np.min(sorted_peak_lags):.1f} to {np.max(sorted_peak_lags):.1f} ms")
-    print(f"Mean peak lag: {np.mean(sorted_peak_lags):.1f} ± {np.std(sorted_peak_lags):.1f} ms")
+    print(f"Baseline-corrected center of mass range: {np.min(sorted_center_of_mass):.1f} to {np.max(sorted_center_of_mass):.1f} ms")
+    print(f"Mean center of mass: {np.mean(sorted_center_of_mass):.1f} ± {np.std(sorted_center_of_mass):.1f} ms")
+    print(f"Correlation range: {min_corr:.3f} to {max_corr:.3f}")
     print(f"Peak correlation range: {np.min(sorted_peak_correlations):.3f} to {np.max(sorted_peak_correlations):.3f}")
-    print(f"Stripe window: ±{peak_window_ms} ms")
-    print(f"Positive correlations: {np.sum(sorted_peak_correlations > 0)} ({np.sum(sorted_peak_correlations > 0)/n_neurons*100:.1f}%)")
-    print(f"Negative correlations: {np.sum(sorted_peak_correlations < 0)} ({np.sum(sorted_peak_correlations < 0)/n_neurons*100:.1f}%)")
     
-    # Count neurons at different lag positions
-    zero_lag_neurons = np.sum(np.abs(sorted_peak_lags) < 1)  # Within ±1ms of zero
-    leading_neurons = np.sum(sorted_peak_lags < -1)  # More than 1ms leading
-    lagging_neurons = np.sum(sorted_peak_lags > 1)   # More than 1ms lagging
+    if filter_hz is not None:
+        print(f"Applied {filter_hz} Hz low-pass filter before analysis")
     
-    print(f"\nTemporal distribution:")
-    print(f"  Leading (< -1ms): {leading_neurons} ({leading_neurons/n_neurons*100:.1f}%)")
-    print(f"  Synchronous (±1ms): {zero_lag_neurons} ({zero_lag_neurons/n_neurons*100:.1f}%)")
-    print(f"  Lagging (> +1ms): {lagging_neurons} ({lagging_neurons/n_neurons*100:.1f}%)")
+    # Count neurons at different center of mass positions
+    zero_com_neurons = np.sum(np.abs(sorted_center_of_mass) < 1)  # Within ±1ms of zero
+    leading_com_neurons = np.sum(sorted_center_of_mass < -1)  # More than 1ms leading
+    lagging_com_neurons = np.sum(sorted_center_of_mass > 1)   # More than 1ms lagging
     
-    # Show extreme neurons
-    print(f"\nMost leading neurons (most negative peak lag):")
+    print(f"\nTemporal distribution (baseline-corrected center of mass):")
+    print(f"  Leading (< -1ms): {leading_com_neurons} ({leading_com_neurons/n_neurons*100:.1f}%)")
+    print(f"  Centered (±1ms): {zero_com_neurons} ({zero_com_neurons/n_neurons*100:.1f}%)")
+    print(f"  Lagging (> +1ms): {lagging_com_neurons} ({lagging_com_neurons/n_neurons*100:.1f}%)")
+    
+    # Show extreme neurons (by center of mass)
+    print(f"\nMost leading neurons (most negative center of mass):")
     for i in range(min(3, n_neurons)):
         neuron_id = sorted_neuron_ids[i]
-        peak_lag = sorted_peak_lags[i]
+        com = sorted_center_of_mass[i]
         peak_corr = sorted_peak_correlations[i]
-        print(f"  Neuron {neuron_id}: {peak_lag:.1f} ms, corr = {peak_corr:.3f}")
+        peak_lag = sorted_peak_lags[i]
+        print(f"  Neuron {neuron_id}: CoM = {com:.1f} ms, peak = {peak_corr:.3f} @ {peak_lag:.1f} ms")
     
-    print(f"\nMost lagging neurons (most positive peak lag):")
+    print(f"\nMost lagging neurons (most positive center of mass):")
     for i in range(max(0, n_neurons-3), n_neurons):
         neuron_id = sorted_neuron_ids[i]
-        peak_lag = sorted_peak_lags[i]
+        com = sorted_center_of_mass[i]
         peak_corr = sorted_peak_correlations[i]
-        print(f"  Neuron {neuron_id}: {peak_lag:.1f} ms, corr = {peak_corr:.3f}")
+        peak_lag = sorted_peak_lags[i]
+        print(f"  Neuron {neuron_id}: CoM = {com:.1f} ms, peak = {peak_corr:.3f} @ {peak_lag:.1f} ms")
+  
     
     return {
         'sorted_neuron_ids': sorted_neuron_ids,
-        'sorted_peak_lags': sorted_peak_lags,
+        'sorted_center_of_mass': sorted_center_of_mass,
         'sorted_peak_correlations': sorted_peak_correlations,
-        'stripe_matrix': stripe_matrix
+        'sorted_peak_lags': sorted_peak_lags,
+        'correlation_matrix': correlation_matrix,
+        'filtered_correlations': filtered_correlations,
+        'filter_hz': filter_hz,
+        'lag_offsets': lag_offsets
+    }
+
+def plot_sleep_vs_wake_correlation_scatter(state_corr_results, max_pairs=None, 
+                                         save_plots=True, output_folder=None,
+                                         color_by='density', figsize=(10, 8)):
+    """
+    Create a scatter plot of sleep vs wake correlations for all neuron pairs.
+    
+    Parameters:
+    -----------
+    state_corr_results : dict
+        Results from analyze_state_specific_correlations containing correlation matrices
+    max_pairs : int, optional
+        Maximum number of pairs to plot (for performance with large matrices)
+    save_plots : bool
+        Whether to save the plot
+    output_folder : str
+        Directory to save the plot
+    color_by : str
+        'density' for density-based coloring, 'simple' for single color, 
+        'magnitude' for correlation magnitude
+    figsize : tuple
+        Figure size
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing extracted correlation values and statistics
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy.stats import gaussian_kde
+    
+    # Extract correlation matrices
+    sleep_corr = state_corr_results['sleep_correlation_matrix']
+    wake_corr = state_corr_results['wake_correlation_matrix']
+    
+    n_neurons = sleep_corr.shape[0]
+    print(f"Extracting correlations for {n_neurons} neurons")
+    
+    # Extract upper triangular values (unique pairs only)
+    upper_tri_mask = np.triu(np.ones_like(sleep_corr, dtype=bool), k=1)
+    
+    # Get correlation values for each pair
+    sleep_correlations = sleep_corr[upper_tri_mask]
+    wake_correlations = wake_corr[upper_tri_mask]
+    
+    # Remove NaN values
+    valid_mask = ~(np.isnan(sleep_correlations) | np.isnan(wake_correlations))
+    sleep_correlations = sleep_correlations[valid_mask]
+    wake_correlations = wake_correlations[valid_mask]
+    
+    n_valid_pairs = len(sleep_correlations)
+    print(f"Valid correlation pairs: {n_valid_pairs}")
+    
+    # Subsample if too many pairs for visualization
+    if max_pairs and n_valid_pairs > max_pairs:
+        sample_indices = np.random.choice(n_valid_pairs, max_pairs, replace=False)
+        sleep_correlations = sleep_correlations[sample_indices]
+        wake_correlations = wake_correlations[sample_indices]
+        print(f"Subsampled to {max_pairs} pairs for visualization")
+    
+    # Calculate difference (sleep - wake) for statistics
+    correlation_difference = sleep_correlations - wake_correlations
+    
+    # Create the scatter plot
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    if color_by == 'density':
+        # Color by point density (useful for large datasets)
+        try:
+            # Calculate point density
+            xy = np.vstack([wake_correlations, sleep_correlations])
+            kde = gaussian_kde(xy)
+            density = kde(xy)
+            
+            scatter = ax.scatter(wake_correlations, sleep_correlations, 
+                               c=density, cmap='viridis', alpha=0.6, s=1)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label('Point Density', fontsize=12)
+        except:
+            # Fallback to simple coloring if density calculation fails
+            ax.scatter(wake_correlations, sleep_correlations, 
+                      alpha=0.6, s=1, color='blue')
+            
+    elif color_by == 'magnitude':
+        # Color by average correlation magnitude
+        avg_magnitude = (np.abs(sleep_correlations) + np.abs(wake_correlations)) / 2
+        scatter = ax.scatter(wake_correlations, sleep_correlations, 
+                           c=avg_magnitude, cmap='plasma', alpha=0.6, s=1)
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Average |Correlation|', fontsize=12)
+        
+    else:  # simple
+        ax.scatter(wake_correlations, sleep_correlations, 
+                  alpha=0.6, s=1, color='blue')
+    
+    # Add diagonal line (x = y, where sleep = wake)
+    min_corr = min(np.min(wake_correlations), np.min(sleep_correlations))
+    max_corr = max(np.max(wake_correlations), np.max(sleep_correlations))
+    ax.plot([min_corr, max_corr], [min_corr, max_corr], 
+            'r--', alpha=0.7, linewidth=2, label='Sleep = Wake')
+    
+    # Formatting
+    ax.set_xlabel('Wake Correlation', fontsize=14)
+    ax.set_ylabel('Sleep Correlation', fontsize=14)
+    ax.set_title(f'Sleep vs Wake Correlations\n{len(sleep_correlations):,} neuron pairs', 
+                fontsize=16)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    
+    # Set equal aspect ratio and limits
+    ax.set_xlim(min_corr, max_corr)
+    ax.set_ylim(min_corr, max_corr)
+    ax.set_aspect('equal')
+    
+    # Calculate statistics
+    sleep_wake_corr = np.corrcoef(sleep_correlations, wake_correlations)[0, 1]
+    
+    # Count points above/below diagonal
+    above_diagonal = np.sum(sleep_correlations > wake_correlations)  # Stronger in sleep
+    below_diagonal = np.sum(sleep_correlations < wake_correlations)  # Stronger in wake
+    on_diagonal = np.sum(sleep_correlations == wake_correlations)    # Equal
+    
+    
+    plt.tight_layout()
+    
+    # Save plot if requested
+    if save_plots and output_folder:
+        plot_filename = 'sleep_vs_wake_correlation_scatter.png'
+        plot_path = os.path.join(output_folder, plot_filename)
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"Scatter plot saved: {plot_path}")
+    
+    plt.show()
+    
+    # Print summary statistics
+    print(f"\n=== CORRELATION SCATTER ANALYSIS ===")
+    print(f"Total valid pairs: {len(sleep_correlations):,}")
+    print(f"Correlation between sleep and wake correlations: {sleep_wake_corr:.3f}")
+    print(f"Mean correlation difference (sleep - wake): {np.mean(correlation_difference):.4f}")
+    print(f"Points above diagonal (stronger in sleep): {above_diagonal:,} ({above_diagonal/len(sleep_correlations)*100:.1f}%)")
+    print(f"Points below diagonal (stronger in wake): {below_diagonal:,} ({below_diagonal/len(sleep_correlations)*100:.1f}%)")
+    
+    return {
+        'sleep_correlations': sleep_correlations,
+        'wake_correlations': wake_correlations,
+        'correlation_difference': correlation_difference,
+        'sleep_wake_correlation': sleep_wake_corr,
+        'n_pairs': len(sleep_correlations),
+        'above_diagonal': above_diagonal,
+        'below_diagonal': below_diagonal,
+        'on_diagonal': on_diagonal
+    }
+
+def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_random=10, 
+                                         specific_neuron_ids=None, output_folder=None, 
+                                         figsize=(15, 10)):
+    """
+    Analyze correlation stability between sleep and wake states for individual neurons.
+    
+    For each neuron, we extract its correlation vector with all other neurons in sleep
+    and wake states, then calculate the Spearman correlation between these vectors.
+    This gives an intuitive measure of how stable a neuron's correlation partners
+    are across states, which should correlate with RRF keeper scores.
+    
+    Parameters:
+    -----------
+    state_corr_results : dict
+        Results from analyze_state_specific_correlations
+    rrf_results : dict
+        Results from analyze_correlation_partner_stability_rrf
+    n_random : int
+        Number of random neurons to show in scatter plots (ignored if specific_neuron_ids provided)
+    specific_neuron_ids : list or None
+        List of specific neuron indices to plot (overrides n_random if provided)
+    output_folder : str
+        Directory to save plots
+    figsize : tuple
+        Figure size for plots
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing stability scores and analysis results
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from scipy.stats import spearmanr, pearsonr
+    import os
+    
+    # Extract correlation matrices
+    sleep_corr = state_corr_results['sleep_correlation_matrix']
+    wake_corr = state_corr_results['wake_correlation_matrix']
+    rrf_scores = rrf_results['rrf_scores']
+    
+    n_neurons = sleep_corr.shape[0]
+    print(f"Analyzing correlation stability for {n_neurons} neurons")
+    
+    # Calculate stability scores for each neuron
+    stability_scores = np.zeros(n_neurons)
+    
+    for neuron_i in range(n_neurons):
+        # Get correlation vectors for this neuron (excluding self-correlation)
+        sleep_vector = sleep_corr[neuron_i, :].copy()
+        wake_vector = wake_corr[neuron_i, :].copy()
+        
+        # Remove self-correlation (set to NaN)
+        sleep_vector[neuron_i] = np.nan
+        wake_vector[neuron_i] = np.nan
+        
+        # Remove NaN pairs
+        valid_mask = ~(np.isnan(sleep_vector) | np.isnan(wake_vector))
+        sleep_clean = sleep_vector[valid_mask]
+        wake_clean = wake_vector[valid_mask]
+        
+        # Calculate Spearman correlation between sleep and wake vectors
+        if len(sleep_clean) > 3:  # Need at least a few points for correlation
+            stability_score, _ = spearmanr(sleep_clean, wake_clean)
+            stability_scores[neuron_i] = stability_score if not np.isnan(stability_score) else 0
+        else:
+            stability_scores[neuron_i] = 0
+    
+    print(f"Stability scores range: {np.min(stability_scores):.3f} to {np.max(stability_scores):.3f}")
+    
+    # Select neurons for visualization
+    if specific_neuron_ids is not None:
+        # Validate specific neuron IDs
+        valid_neurons = []
+        for neuron_id in specific_neuron_ids:
+            if 0 <= neuron_id < n_neurons:
+                valid_neurons.append(neuron_id)
+            else:
+                print(f"Warning: Neuron ID {neuron_id} is out of range (0-{n_neurons-1})")
+        
+        if len(valid_neurons) == 0:
+            print("Error: No valid neuron IDs provided")
+            return None
+            
+        neurons_to_plot = np.array(valid_neurons)
+        print(f"Plotting specific neurons: {neurons_to_plot}")
+    else:
+        # Select random neurons for visualization
+        neurons_to_plot = np.random.choice(n_neurons, size=min(n_random, n_neurons), replace=False)
+        print(f"Plotting {len(neurons_to_plot)} random neurons: {neurons_to_plot}")
+    
+    # Create two separate figures: 1) Individual plots, 2) Summary plots
+    
+    # FIGURE 1: Individual neuron correlation plots
+    n_individual_plots = len(neurons_to_plot)
+    n_cols = min(5, n_individual_plots)  # Max 5 columns for individual plots
+    n_rows_individual = int(np.ceil(n_individual_plots / n_cols))
+    
+    fig1 = plt.figure(figsize=(figsize[0], n_rows_individual * 3))
+    
+    # Plot individual neurons (one subplot per neuron)
+    for i, neuron_idx in enumerate(neurons_to_plot):
+        ax = plt.subplot(n_rows_individual, n_cols, i + 1)
+        
+        # Get correlation vectors for this specific neuron (excluding self)
+        sleep_vector = sleep_corr[neuron_idx, :].copy()
+        wake_vector = wake_corr[neuron_idx, :].copy()
+        sleep_vector[neuron_idx] = np.nan
+        wake_vector[neuron_idx] = np.nan
+        
+        # Remove NaN pairs
+        valid_mask = ~(np.isnan(sleep_vector) | np.isnan(wake_vector))
+        sleep_clean = sleep_vector[valid_mask]
+        wake_clean = wake_vector[valid_mask]
+        
+        # Plot scatter: each point is this neuron's correlation with one partner
+        # X-axis: wake correlation with partner j
+        # Y-axis: sleep correlation with partner j
+        ax.scatter(wake_clean, sleep_clean, alpha=0.6, s=20, color='blue')
+        
+        # Add diagonal line
+        corr_min = min(np.min(sleep_clean), np.min(wake_clean))
+        corr_max = max(np.max(sleep_clean), np.max(wake_clean))
+        ax.plot([corr_min, corr_max], [corr_min, corr_max], 'k--', alpha=0.5, linewidth=1)
+        
+        ax.set_xlabel('Wake Correlation')
+        ax.set_ylabel('Sleep Correlation')
+        ax.set_title(f'Neuron {neuron_idx}\nStability: {stability_scores[neuron_idx]:.3f}')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(corr_min, corr_max)
+        ax.set_ylim(corr_min, corr_max)
+        ax.set_aspect('equal')
+    
+    # Add overall title with proper spacing
+    fig1.suptitle('Individual Neuron Correlation Stability\n'
+                  'Each point = correlation with one partner neuron', 
+                  fontsize=14, y=0.98)
+    
+    # Adjust spacing to prevent overlaps
+    plt.tight_layout(rect=[0, 0, 1, 0.94])  # Leave space for suptitle
+    
+    # Save individual plots if requested
+    if output_folder:
+        plot_path1 = os.path.join(output_folder, 'individual_neuron_stability_plots.png')
+        plt.savefig(plot_path1, dpi=300, bbox_inches='tight')
+        print(f"Individual neuron plots saved: {plot_path1}")
+    
+    plt.show()
+    
+    # FIGURE 2: Summary plots (Distribution + RRF correlation)
+    fig2, (ax_dist, ax_corr) = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Panel 1: Distribution of stability scores AND RRF scores (overlaid)
+    ax_dist.hist(stability_scores, bins=30, alpha=0.6, color='skyblue', edgecolor='black', 
+                label='Stability Scores')
+    ax_dist.hist(rrf_scores, bins=30, alpha=0.6, color='orange', edgecolor='black', 
+                label='RRF Scores')
+
+    # Add mean lines for both distributions
+    ax_dist.axvline(np.mean(stability_scores), color='blue', linestyle='--', alpha=0.8,
+                label=f'Stability Mean: {np.mean(stability_scores):.3f}')
+    ax_dist.axvline(np.mean(rrf_scores), color='red', linestyle='--', alpha=0.8,
+                label=f'RRF Mean: {np.mean(rrf_scores):.3f}')
+
+    ax_dist.set_xlabel('Score')
+    ax_dist.set_ylabel('Number of Neurons')
+    ax_dist.set_title('Distribution of Stability\nand RRF Scores')
+    ax_dist.legend()
+    ax_dist.grid(True, alpha=0.3)
+
+    # Panel 2: Stability vs RRF scores
+    # Calculate correlation between stability and RRF scores
+    stability_rrf_corr, stability_rrf_p = pearsonr(stability_scores, rrf_scores)
+    stability_rrf_spearman, stability_rrf_spearman_p = spearmanr(stability_scores, rrf_scores)
+
+    # Create scatter plot
+    ax_corr.scatter(stability_scores, rrf_scores, alpha=0.6, s=20, color='purple')
+
+    # Add trend line
+    z = np.polyfit(stability_scores, rrf_scores, 1)
+    p = np.poly1d(z)
+    x_trend = np.linspace(np.min(stability_scores), np.max(stability_scores), 100)
+    ax_corr.plot(x_trend, p(x_trend), 'r-', alpha=0.8, linewidth=2)
+
+    ax_corr.set_xlabel('Stability Score (Spearman r)')
+    ax_corr.set_ylabel('RRF Keeper Score')
+    ax_corr.set_title(f'Stability vs RRF Scores\nr={stability_rrf_corr:.3f}, p={stability_rrf_p:.1e}')
+    ax_corr.grid(True, alpha=0.3)
+
+    # Add correlation info as text
+    corr_text = f'Pearson: r={stability_rrf_corr:.3f}, p={stability_rrf_p:.1e}\n'
+    corr_text += f'Spearman: ρ={stability_rrf_spearman:.3f}, p={stability_rrf_spearman_p:.1e}'
+    ax_corr.text(0.05, 0.95, corr_text, transform=ax_corr.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    
+    # Save summary plots if requested
+    if output_folder:
+        plot_path2 = os.path.join(output_folder, 'correlation_stability_summary.png')
+        plt.savefig(plot_path2, dpi=300, bbox_inches='tight')
+        print(f"Summary plots saved: {plot_path2}")
+    
+    plt.show()
+    
+    # Print detailed statistics
+    print(f"\n=== CORRELATION STABILITY ANALYSIS ===")
+    print(f"Neurons analyzed: {n_neurons}")
+    print(f"Stability score statistics:")
+    print(f"  Mean: {np.mean(stability_scores):.3f}")
+    print(f"  Median: {np.median(stability_scores):.3f}")
+    print(f"  Std: {np.std(stability_scores):.3f}")
+    print(f"  Range: {np.min(stability_scores):.3f} to {np.max(stability_scores):.3f}")
+    
+    print(f"\nCorrelation with RRF keeper scores:")
+    print(f"  Pearson correlation: r = {stability_rrf_corr:.3f}, p = {stability_rrf_p:.1e}")
+    print(f"  Spearman correlation: ρ = {stability_rrf_spearman:.3f}, p = {stability_rrf_spearman_p:.1e}")
+    
+    # Identify most and least stable neurons
+    most_stable_idx = np.argmax(stability_scores)
+    least_stable_idx = np.argmin(stability_scores)
+    
+    print(f"\nMost stable neuron:")
+    print(f"  Neuron {most_stable_idx}: Stability = {stability_scores[most_stable_idx]:.3f}, RRF = {rrf_scores[most_stable_idx]:.3f}")
+    
+    print(f"\nLeast stable neuron:")
+    print(f"  Neuron {least_stable_idx}: Stability = {stability_scores[least_stable_idx]:.3f}, RRF = {rrf_scores[least_stable_idx]:.3f}")
+    
+    # Count neurons with high stability (top quartile)
+    high_stability_threshold = np.percentile(stability_scores, 75)
+    high_stability_neurons = np.sum(stability_scores >= high_stability_threshold)
+    
+    print(f"\nNeurons with high stability (≥75th percentile, {high_stability_threshold:.3f}):")
+    print(f"  {high_stability_neurons} neurons ({high_stability_neurons/n_neurons*100:.1f}%)")
+    
+    # Compare with RRF classification
+    rrf_top_quartile = np.percentile(rrf_scores, 75)
+    rrf_high_neurons = np.sum(rrf_scores >= rrf_top_quartile)
+    
+    # Overlap between high stability and high RRF
+    high_both = np.sum((stability_scores >= high_stability_threshold) & 
+                      (rrf_scores >= rrf_top_quartile))
+    
+    print(f"\nOverlap between high stability and high RRF neurons:")
+    print(f"  {high_both} neurons are in both top quartiles ({high_both/min(high_stability_neurons, rrf_high_neurons)*100:.1f}% overlap)")
+    
+    # Print info about plotted neurons
+    print(f"\nPlotted neurons and their stability scores:")
+    for neuron_idx in neurons_to_plot:
+        print(f"  Neuron {neuron_idx}: Stability = {stability_scores[neuron_idx]:.3f}, RRF = {rrf_scores[neuron_idx]:.3f}")
+    
+    return {
+        'stability_scores': stability_scores,
+        'rrf_scores': rrf_scores,
+        'stability_rrf_correlation': stability_rrf_corr,
+        'stability_rrf_p_value': stability_rrf_p,
+        'stability_rrf_spearman': stability_rrf_spearman,
+        'stability_rrf_spearman_p': stability_rrf_spearman_p,
+        'most_stable_neuron': most_stable_idx,
+        'least_stable_neuron': least_stable_idx,
+        'high_stability_threshold': high_stability_threshold,
+        'n_high_stability': high_stability_neurons,
+        'n_high_rrf': rrf_high_neurons,
+        'n_overlap_high': high_both,
+        'plotted_neurons': neurons_to_plot
     }
