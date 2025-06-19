@@ -1559,8 +1559,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add light colored vertical spans for sleep periods
         for _, bout in sleep_bouts.iterrows():
-            ax_behav.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                            color='lightblue', alpha=0.3, ec='none')
+            ax_behav.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+                        color='lightblue', alpha=0.3, ec='none')
         
         ax_behav.set_title('Motion Activity (Pixel Difference)')
         ax_behav.set_ylabel('Smoothed\nDifference')
@@ -1634,10 +1634,10 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         # Create tick positions based on sleep bout boundaries
         sleep_starts = []
         sleep_ends = []
-        for _, bout in results[reference_probe]['sleep_bout_mapping'].iterrows():
+        for _, bout in sleep_bouts.iterrows():
             # Remove the in_range check to ensure all bouts are included
-            sleep_starts.append(bout['start_bin_time'])
-            sleep_ends.append(bout['end_bin_time'])
+            sleep_starts.append(bout['start_timestamp_s'])
+            sleep_ends.append(bout['end_timestamp_s'])
                 
         # Add binary sleep/wake indicator at the top of the plot
         # Calculate appropriate height for the indicator line (just above the top of the plot)
@@ -1697,8 +1697,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add light colored vertical spans for sleep periods
         for _, bout in sleep_bouts.iterrows():
-            ax2.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                        color='lightblue', alpha=0.3, ec='none')
+            ax2.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+            color='lightblue', alpha=0.3, ec='none')
 
         ax2.grid(True, alpha=0.2)
         ax2.set_title('Average activity across all filtered clusters')
@@ -1715,8 +1715,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         ax3.set_title('PC1 over time (raw)')
         ax3.set_ylabel('PC1 Score')
         for _, bout in sleep_bouts.iterrows():
-            ax3.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                        color='lightblue', alpha=0.3, ec='none')
+            ax3.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+            color='lightblue', alpha=0.3, ec='none')
         ax3.grid(True, alpha=0.2)
         ax3.legend()
         ax3.set_xlim(time_extent)
@@ -1769,12 +1769,12 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         im3 = ax4.matshow(Sxx_db_filtered, aspect='auto', origin='lower', 
                         extent=spec_extent, cmap='viridis',
                         vmin=vmin, vmax=vmax)
-        
+
         # Add sleep bout outlines as vertical lines
         for _, bout in sleep_bouts.iterrows():
-            ax4.axvline(x=bout['start_bin_time'], color='white', linestyle='--', alpha=0.7)
-            ax4.axvline(x=bout['end_bin_time'], color='white', linestyle='--', alpha=0.7)
-        
+            ax4.axvline(x=bout['start_timestamp_s'], color='white', linestyle='--', alpha=0.7)
+            ax4.axvline(x=bout['end_timestamp_s'], color='white', linestyle='--', alpha=0.7)
+
         # Add horizontal lines for frequency bands
         ax4.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
         ax4.axhline(y=4, color='white', linestyle='-', alpha=0.5, label='Delta end / Theta start (4Hz)')
@@ -1839,8 +1839,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         
         # Add sleep bout highlights
         for _, bout in sleep_bouts.iterrows():
-            ax5.axvspan(bout['start_bin_time'], bout['end_bin_time'], 
-                        color='lightblue', alpha=0.3, ec='none')
+            ax5.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+            color='lightblue', alpha=0.3, ec='none')
         
         title_suffix = " (Smoothed)" if smoothed_available else ""
         ax5.set_title(f'Power in Frequency Bands Over Time{title_suffix}')
@@ -2035,12 +2035,30 @@ def power_band_smoothing(spectrum_results, df_sleep, window_size=30, poly_order=
         
         # Convert behavioral sleep to a binary mask
         behavioral_mask = np.zeros(num_samples, dtype=bool)
+        total_behavioral_sleep = 0
+        
         for _, row in behavioral_df.iterrows():
             start = row['start_timestamp_s']
             end = row['end_timestamp_s']
+            
+            # Convert Series to scalar if needed
+            if hasattr(start, 'iloc'):
+                start = start.iloc[0]
+            if hasattr(end, 'iloc'):
+                end = end.iloc[0]
+                
+            total_behavioral_sleep += (end - start)
+            
+            # ADD THE MISSING PART: Actually populate the behavioral mask
             start_idx = max(0, int((start - times[0]) / time_step))
             end_idx = min(num_samples - 1, int((end - times[0]) / time_step))
             behavioral_mask[start_idx:end_idx+1] = True
+        
+        behavioral_sleep_time = total_behavioral_sleep
+        total_recording_time = times[-1] - times[0]
+        behavioral_sleep_percentage = (behavioral_sleep_time / total_recording_time) * 100
+        
+        print(f"- Total sleep time: {behavioral_sleep_time:.1f}s ({behavioral_sleep_percentage:.1f}% of recording)")
         
         # Calculate overlap
         intersection = np.sum(detected_mask & behavioral_mask)
@@ -2121,8 +2139,7 @@ def power_band_smoothing(spectrum_results, df_sleep, window_size=30, poly_order=
     # Print sleep statistics
     print("\nBehavioral Sleep Statistics:")
     print(f"- {len(df_sleep)} sleep bouts")
-    print(f"- Total sleep time: {behavioral_sleep_time:.1f}s ({behavioral_sleep_percentage:.1f}% of recording)")
-    
+    print(f"- Total sleep time: {behavioral_sleep_time:.1f}s ({behavioral_sleep_percentage:.1f}% of recording)")    
     print(f"\nMoving Average Sleep Detection (threshold={threshold_ma}dB, min duration={min_duration_s}s):")
     print(f"- Detected {len(sleep_periods_ma)} sleep bouts")
     print(f"- Total sleep time: {total_sleep_time_ma:.1f}s ({sleep_percentage_ma:.1f}% of recording)")
@@ -2147,6 +2164,13 @@ def power_band_smoothing(spectrum_results, df_sleep, window_size=30, poly_order=
     for _, row in df_sleep.iterrows():
         start = row['start_timestamp_s']
         end = row['end_timestamp_s']
+        
+        # Convert to scalar if needed
+        if isinstance(start, pd.Series):
+            start = start.values[0]
+        if isinstance(end, pd.Series):
+            end = end.values[0]
+            
         start_idx = max(0, int((start - times[0]) / time_step))
         end_idx = min(len(times) - 1, int((end - times[0]) / time_step))
         behavior_mask[start_idx:end_idx+1] = 1
@@ -2160,8 +2184,16 @@ def power_band_smoothing(spectrum_results, df_sleep, window_size=30, poly_order=
     
     # Add light colored vertical spans for behavioral sleep periods
     for _, row in df_sleep.iterrows():
-        ax_beh.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
-                      color='lightblue', alpha=0.3, ec='none')
+        start = row['start_timestamp_s']
+        end = row['end_timestamp_s']
+        
+        # Convert Series to scalar if needed
+        if hasattr(start, 'iloc'):
+            start = start.iloc[0]
+        if hasattr(end, 'iloc'):
+            end = end.iloc[0]
+            
+        ax_beh.axvspan(start, end, color='lightblue', alpha=0.3, ec='none')
     
     # Plot 2: Original vs Moving Average with sleep detection
     ax1 = fig.add_subplot(gs[1], sharex=ax_beh)
@@ -2244,8 +2276,17 @@ def power_band_smoothing(spectrum_results, df_sleep, window_size=30, poly_order=
         
         # Add behavioral sleep period vertical lines
         for _, row in df_sleep.iterrows():
-            ax3.axvline(x=row['start_timestamp_s'], color='white', linestyle='--', alpha=0.7)
-            ax3.axvline(x=row['end_timestamp_s'], color='white', linestyle='--', alpha=0.7)
+            start = row['start_timestamp_s']
+            end = row['end_timestamp_s']
+            
+            # Convert Series to scalar if needed
+            if hasattr(start, 'iloc'):
+                start = start.iloc[0]
+            if hasattr(end, 'iloc'):
+                end = end.iloc[0]
+                
+            ax3.axvline(x=start, color='white', linestyle='--', alpha=0.7)
+            ax3.axvline(x=end, color='white', linestyle='--', alpha=0.7)
         
         # Add horizontal lines for frequency bands
         ax3.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
@@ -3763,7 +3804,7 @@ def correlate_pc_with_movement(pca_results, dlc_folder, pc_index=1, time_range=N
 def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
                                subject, output_folder, regions_to_analyze, 
                                movement_column='smoothed_difference', components_to_plot=(0, 1),
-                               use_sg_filter=True):
+                               use_sg_filter=True, movement_upper_limit=800000):
     """
     Analyze specific regions of PC space over time with behavioral and spectral context.
     Creates separate plot sets for each region with movement-intensity coloring.
@@ -3845,16 +3886,35 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
     except Exception as e:
         print(f"Error loading behavioral data: {e}")
         return None
-    
+    if movement_data is not None:
+        # Apply movement capping (same as plot_pca_with_behavioral_features)
+        movement_min = np.nanmin(movement_data)
+        movement_max = np.nanmax(movement_data)
+        
+        print(f"Original movement range: {movement_min:.0f} to {movement_max:.0f}")
+        print(f"Applying upper limit cap at: {movement_upper_limit}")
+        
+        # Cap the movement values
+        movement_data_capped = np.clip(movement_data, movement_min, movement_upper_limit)
+        
+        # Update the movement_data for all subsequent processing
+        movement_data = movement_data_capped
+        
+        capped_max = np.nanmax(movement_data)
+        print(f"Capped movement range: {movement_min:.0f} to {capped_max:.0f}")
+
     # Get movement values at PC time points for coloring
     if len(movement_time) > 1:
         interp_func = interp1d(movement_time, movement_data, 
-                             kind='linear', bounds_error=False, fill_value=np.nan)
+                            kind='linear', bounds_error=False, fill_value=np.nan)
         movement_at_pc_times = interp_func(time_bins_pca)
         
         # Remove NaN values for coloring
         valid_movement_mask = ~np.isnan(movement_at_pc_times)
-        print(f"Valid movement data at PC times: {np.sum(valid_movement_mask)}/{len(movement_at_pc_times)}")
+        
+        # Use capped values for normalization (5th to 95th percentile of capped data)
+        movement_norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
+                                vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
     else:
         print("Error: Insufficient movement data for interpolation")
         return None
@@ -4490,13 +4550,20 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
     print(f"Time range: {time_bins_pca[0]:.1f}s to {time_bins_pca[-1]:.1f}s")
     print(f"Behavior type: {behavior}")
     
-    # Check that all windows are the same length
+    # Check that all windows are the same length with floating-point error tolerance
     window_durations = [w['end_time'] - w['start_time'] for w in time_windows_to_analyze]
-    if len(set(window_durations)) > 1:
+    
+    # Round durations to 6 decimal places to handle floating-point errors
+    rounded_durations = [round(duration, 6) for duration in window_durations]
+    
+    print(f"Original durations: {window_durations}")
+    print(f"Rounded durations: {rounded_durations}")
+    
+    if len(set(rounded_durations)) > 1:
         print(f"Error: All time windows must be the same length. Found durations: {window_durations}")
         return None
     
-    window_duration = window_durations[0]
+    window_duration = rounded_durations[0]  # Use the rounded duration
     print(f"Analyzing {len(time_windows_to_analyze)} windows of {window_duration}s each")
     
     # EXACT COPY FROM WORKING plot_pca_with_behavioral_features function
@@ -4603,28 +4670,58 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
         print("Error: No valid windows found")
         return None
     
-    # Find the minimum number of points across all windows
-    min_points = min(len(w) for w in all_window_pc1)
-    print(f"Using {min_points} points per window (minimum across all windows)")
-    
-    # Truncate all windows to the same length and calculate averages
-    averaged_pc1 = np.zeros(min_points)
-    averaged_pc2 = np.zeros(min_points)
-    averaged_behavior = np.zeros(min_points)
-    averaged_times = np.linspace(0, window_duration, min_points)
-    
-    for point_idx in range(min_points):
-        pc1_values = [w[point_idx] for w in all_window_pc1]
-        pc2_values = [w[point_idx] for w in all_window_pc2]
-        behavior_values_list = [w[point_idx] for w in all_window_behavior]
+    max_points = max(len(w) for w in all_window_pc1)
+    print(f"Using {max_points} points for full trajectory (max across windows)")
+
+    # Initialize arrays for averaging - use the maximum number of points
+    averaged_pc1 = np.full(max_points, np.nan)
+    averaged_pc2 = np.full(max_points, np.nan)
+    averaged_behavior = np.full(max_points, np.nan)
+    point_counts = np.zeros(max_points)  # Track how many windows contribute to each point
+
+    # Create time array for the full expected duration
+    averaged_times = np.linspace(0, window_duration, max_points)
+
+    # Accumulate values from all windows
+    for window_idx, (w_pc1, w_pc2, w_behavior, w_times) in enumerate(zip(
+        all_window_pc1, all_window_pc2, all_window_behavior, all_window_times)):
         
-        averaged_pc1[point_idx] = np.mean(pc1_values)
-        averaged_pc2[point_idx] = np.mean(pc2_values)
-        averaged_behavior[point_idx] = np.mean(behavior_values_list)
-    
-    print(f"Calculated averaged trajectory with {len(averaged_pc1)} points")
-    print(f"Behavior time array length: {len(behavior_time)}")
-    print(f"Behavior values array length: {len(behavior_values)}")
+        window_length = len(w_pc1)
+        
+        # For each point in this window, add to the running sum
+        for point_idx in range(window_length):
+            if point_idx < max_points:  # Safety check
+                if np.isnan(averaged_pc1[point_idx]):
+                    # First contribution to this point
+                    averaged_pc1[point_idx] = w_pc1[point_idx]
+                    averaged_pc2[point_idx] = w_pc2[point_idx]
+                    averaged_behavior[point_idx] = w_behavior[point_idx]
+                else:
+                    # Add to existing sum
+                    averaged_pc1[point_idx] += w_pc1[point_idx]
+                    averaged_pc2[point_idx] += w_pc2[point_idx]
+                    averaged_behavior[point_idx] += w_behavior[point_idx]
+                
+                point_counts[point_idx] += 1
+
+    # Calculate averages by dividing by the number of contributing windows
+    for point_idx in range(max_points):
+        if point_counts[point_idx] > 0:
+            averaged_pc1[point_idx] /= point_counts[point_idx]
+            averaged_pc2[point_idx] /= point_counts[point_idx]
+            averaged_behavior[point_idx] /= point_counts[point_idx]
+
+    # Remove any remaining NaN values (shouldn't happen, but safety check)
+    valid_avg_mask = ~(np.isnan(averaged_pc1) | np.isnan(averaged_pc2) | np.isnan(averaged_behavior))
+
+    if np.sum(valid_avg_mask) < max_points:
+        print(f"Warning: Only {np.sum(valid_avg_mask)}/{max_points} points have valid averages")
+        averaged_pc1 = averaged_pc1[valid_avg_mask]
+        averaged_pc2 = averaged_pc2[valid_avg_mask]
+        averaged_behavior = averaged_behavior[valid_avg_mask]
+        averaged_times = averaged_times[valid_avg_mask]
+
+    print(f"Final averaged trajectory: {len(averaged_pc1)} points")
     
     # Create color map based on behavior intensity
     behavior_norm = Normalize(vmin=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 5), 
@@ -4674,11 +4771,10 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
     # Middle plot (spans both columns): Averaged behavior over relative time
     ax2 = fig.add_subplot(gs[1, :])
     
-    # Plot individual windows in light colors
+    # Plot individual windows in light colors (only up to their available length)
     for window_idx, (window_behavior, window_times) in enumerate(zip(all_window_behavior, all_window_times)):
-        if len(window_behavior) >= min_points:
-            ax2.plot(window_times[:min_points], window_behavior[:min_points], 
-                    color='lightgray', alpha=0.5, linewidth=1)
+        ax2.plot(window_times, window_behavior, 
+                color='lightgray', alpha=0.5, linewidth=1)
     
     # Plot averaged behavior
     ax2.plot(averaged_times, averaged_behavior, 'k-', linewidth=3, alpha=0.8, label='Averaged')
@@ -4788,7 +4884,6 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
     print(f"\n=== Averaged Trajectory Analysis Summary ===")
     print(f"  Number of windows: {len(time_windows_to_analyze)}")
     print(f"  Window duration: {window_duration}s")  
-    print(f"  Points per window: {min_points}")
     print(f"  Total path length: {total_distance:.2f}")
     print(f"  Net displacement: {net_displacement:.2f}")
     print(f"  Tortuosity: {tortuosity:.2f}")
@@ -4807,7 +4902,6 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
         },
         'window_duration': window_duration,
         'num_windows': len(time_windows_to_analyze),
-        'points_per_window': min_points,
         'behavior_type': behavior,
         'trajectory_stats': {
             'total_distance': total_distance,

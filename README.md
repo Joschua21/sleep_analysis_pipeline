@@ -46,3 +46,8 @@ Can be used to customize analysis, e.g., use: python sleep_analysis_pipeline.py 
   },
   "/path/to/experiment3directory": {} #default parameters will be used
 }
+
+
+# Neuropixel Analysis Guidelines:
+
+MJ2 video file needs to sit in the base directory (subjid) in the subfolder "DLC". Then, adjust the exp Parameters at the top of the notebook and the code will run. Run the pixel_difference first!

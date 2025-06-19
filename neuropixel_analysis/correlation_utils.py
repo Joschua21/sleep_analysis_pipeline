@@ -2272,6 +2272,9 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
         valid_mask = ~(np.isnan(sleep_vector) | np.isnan(wake_vector))
         sleep_clean = sleep_vector[valid_mask]
         wake_clean = wake_vector[valid_mask]
+        if len(sleep_clean) == 0 or len(wake_clean) == 0:
+            print(f"Warning: Neuron {neuron_i} has no valid correlations (sleep: {len(sleep_clean)}, wake: {len(wake_clean)})")
+            continue  # Skip this neuron and move to the next one
         
         # Calculate Spearman correlation between sleep and wake vectors
         if len(sleep_clean) > 3:  # Need at least a few points for correlation
@@ -2333,9 +2336,21 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
         ax.scatter(wake_clean, sleep_clean, alpha=0.6, s=20, color='blue')
         
         # Add diagonal line
-        corr_min = min(np.min(sleep_clean), np.min(wake_clean))
-        corr_max = max(np.max(sleep_clean), np.max(wake_clean))
-        ax.plot([corr_min, corr_max], [corr_min, corr_max], 'k--', alpha=0.5, linewidth=1)
+        if len(sleep_clean) > 0 and len(wake_clean) > 0:
+            corr_min = min(np.min(sleep_clean), np.min(wake_clean))
+            corr_max = max(np.max(sleep_clean), np.max(wake_clean))
+            ax.plot([corr_min, corr_max], [corr_min, corr_max], 'k--', alpha=0.5, linewidth=1)
+            
+            # Set axis limits
+            ax.set_xlim(corr_min - 0.05, corr_max + 0.05)
+            ax.set_ylim(corr_min - 0.05, corr_max + 0.05)
+        else:
+            # Handle case where neuron has no valid correlations
+            ax.text(0.5, 0.5, f'Neuron {neuron_id}:\nNo valid correlations', 
+                    ha='center', va='center', transform=ax.transAxes, 
+                    fontsize=10, color='red')
+            ax.set_xlim(-1, 1)
+            ax.set_ylim(-1, 1)
         
         ax.set_xlabel('Wake Correlation')
         ax.set_ylabel('Sleep Correlation')
