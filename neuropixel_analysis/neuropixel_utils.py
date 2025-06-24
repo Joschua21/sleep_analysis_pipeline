@@ -980,28 +980,11 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         sns.boxplot(data=df_plot, x='state', y='firing_rate', color='white', fliersize=0, width=0.5, 
                    boxprops={"facecolor": (.9, .9, .9, 0.5), "edgecolor": "black"}, ax=axes[0])
         
-        # Perform statistical test
-        sleep_rates_plot = df_plot[df_plot['state'] == 'Sleep']['firing_rate'].values
-        wake_rates_plot = df_plot[df_plot['state'] == 'Wake']['firing_rate'].values
-        
-        if len(sleep_rates_plot) > 0 and len(wake_rates_plot) > 0:
-            stat, p_value = stats.mannwhitneyu(sleep_rates_plot, wake_rates_plot)
-            axes[0].set_title(f'State-Dependent Firing Rates\n(p={p_value:.4f})')
+        axes[0].set_title(f'State-Dependent Firing Rates')
             
-            # Add number of observations
-            axes[0].text(0.02, 0.98, f'Sleep: n={len(sleep_rates_plot)}\n{len(np.unique(df_plot[df_plot["state"] == "Sleep"]["cluster_id"]))} clusters', 
-                        transform=axes[0].transAxes, verticalalignment='top', fontsize=9)
-            
-            axes[0].text(0.98, 0.98, f'Wake: n={len(wake_rates_plot)}\n{len(np.unique(df_plot[df_plot["state"] == "Wake"]["cluster_id"]))} clusters', 
-                        transform=axes[0].transAxes, verticalalignment='top', horizontalalignment='right', fontsize=9)
-        else:
-            axes[0].set_title('State-Dependent Firing Rates')
     else:
-        axes[0].text(0.5, 0.5, 'No data available for state analysis', 
-                    ha='center', va='center', transform=axes[0].transAxes)
-        axes[0].set_title('State-Dependent Firing Rates (No Data)')
-    
-    axes[0].set_xlabel('State')
+        print("No data available for state distribution plot.")
+
     axes[0].set_ylabel('Normalized Firing Rate')
     axes[0].grid(True, axis='y', alpha=0.3)
     
@@ -1024,12 +1007,13 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         )
         
         x_vals = np.array([0, max_val*1.1])
-        axes[1].plot(x_vals, intercept + slope * x_vals, 'r-', alpha=0.7,
-                    label=f'y = {slope:.2f}x + {intercept:.2f}\n(r²={r_value**2:.2f}, p={p_value_stability:.4f})')
+        axes[1].plot(x_vals, intercept + slope * x_vals, 'r-', alpha=0.7)
+
+
         
-        axes[1].set_xlabel('Category 1 - Average Normalized Firing Rate')
-        axes[1].set_ylabel('Category 2 - Average Normalized Firing Rate')
-        axes[1].set_title('Neuronal Stability\nFiring Rate Consistency')
+        axes[1].set_xlabel('C1 - Average Firing Rate')
+        axes[1].set_ylabel('C2 - Average Firing Rate')
+        axes[1].set_title('Neuronal Stability')
         axes[1].legend(fontsize=9)
         axes[1].grid(True, alpha=0.3)
     else:
@@ -1059,8 +1043,8 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         )
         
         x_mod_vals = np.array([-max_mod, max_mod])
-        axes[2].plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7,
-                    label=f'y = {mod_slope:.2f}x + {mod_intercept:.2f}\n(r²={mod_r**2:.2f}, p={mod_p:.4f})')
+        axes[2].plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7)
+
         
         # Add quadrant lines
         axes[2].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
@@ -1072,9 +1056,9 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         q3 = np.sum((c1_modulation < 0) & (c2_modulation < 0) & valid_mod_mask)
         q4 = np.sum((c1_modulation > 0) & (c2_modulation < 0) & valid_mod_mask)
         
-        axes[2].set_xlabel('Category 1 - Wake-Sleep Modulation')
-        axes[2].set_ylabel('Category 2 - Wake-Sleep Modulation')
-        axes[2].set_title('Sleep-Wake Modulation\nConsistency')
+        axes[2].set_xlabel('C1 - Wake-Sleep Modulation')
+        axes[2].set_ylabel('C2 - Wake-Sleep Modulation')
+        axes[2].set_title('Sleep-Wake Modulation')
         axes[2].legend(fontsize=9)
         axes[2].grid(True, alpha=0.3)
         
@@ -1082,10 +1066,6 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         axes[2].set_xlim(-max_mod, max_mod)
         axes[2].set_ylim(-max_mod, max_mod)
         
-        # Add quadrant counts as text
-        axes[2].text(0.02, 0.98, f'Consistent:\nQ1: {q1}, Q3: {q3}\nTotal: {q1+q3}/{np.sum(valid_mod_mask)} ({(q1+q3)/np.sum(valid_mod_mask)*100:.0f}%)', 
-                    transform=axes[2].transAxes, verticalalignment='top', fontsize=8, 
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
     else:
         axes[2].text(0.5, 0.5, 'Insufficient data for\nmodulation analysis',
                    ha='center', va='center', transform=axes[2].transAxes)
@@ -2604,29 +2584,69 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     for _, row in neural_sleep_df.iterrows():
         ax3.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
                    ymin=0, ymax=1, color='blue', alpha=0.2) # ymin/ymax relative to axes
-
-    ax3.set_title(f"{subject}: PC{pc_index_to_plot +1} over Recording Time")
+    ax3.set_title(f"PC{pc_index_to_plot +1} over Time")
     ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel(f'PC{pc_index_to_plot +1} Score')
-    
+    ax3.set_ylabel(f'PC{pc_index_to_plot +1} Score')    
     timeseries_filename = os.path.join(output_folder, f"{subject}_pca_pc{pc_index_to_plot+1}_timeseries.png")
     plt.savefig(timeseries_filename, dpi=300)
     plt.show()
     
-    # === PLOT 4: Hexbin Density Plot ===
+    # === PLOT 4: Hexbin Plot ===
     fig4, ax4 = plt.subplots(figsize=(10, 8))
     pc1 = pca_result[:, comp1_idx]
     pc2 = pca_result[:, comp2_idx]
     
-    hb = ax4.hexbin(pc1, pc2, gridsize=30, cmap='viridis', alpha=0.7)
+    # Create hexbin plot
+    hexbin = ax4.hexbin(pc1, pc2, gridsize=30, cmap='viridis', alpha=0.8, mincnt=1)
     ax4.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
     ax4.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
-    ax4.set_title('PC1 vs PC2 Density', fontsize=16, fontweight='bold')
-    cb = plt.colorbar(hb, ax=ax4)
-    cb.set_label('Count', fontsize=14)
+    ax4.set_title('PC1 vs PC2 Hexbin Density', fontsize=16, fontweight='bold')
     ax4.grid(True, alpha=0.3)
     ax4.axhline(0, color='gray', linestyle='--', linewidth=0.7)
     ax4.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    # Add colorbar
+    plt.colorbar(hexbin, ax=ax4, label='Count')
+    
+    hexbin_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_hexbin.png")
+    plt.savefig(hexbin_filename, dpi=300)
+    plt.show()
+    
+    # === PLOT 5: State-Aware Density Plot ===
+    fig5, ax5 = plt.subplots(figsize=(10, 8))
+    
+    # Create state-specific data
+    pc1_sleep = pc1[sleep_mask_orig]
+    pc2_sleep = pc2[sleep_mask_orig]
+    pc1_wake = pc1[wake_mask_orig]
+    pc2_wake = pc2[wake_mask_orig]
+    
+    # Use KDE (Kernel Density Estimation) for better state visualization
+    import seaborn as sns
+    
+    # Plot wake density first (in orange/red)
+    if len(pc1_wake) > 10:  # Need sufficient points for KDE
+        sns.kdeplot(x=pc1_wake, y=pc2_wake, ax=ax5, color='red', alpha=0.6, 
+                   fill=True, levels=10, label='Wake Density')
+    
+    # Plot sleep density (in blue) - overlaying wake
+    if len(pc1_sleep) > 10:  # Need sufficient points for KDE
+        sns.kdeplot(x=pc1_sleep, y=pc2_sleep, ax=ax5, color='blue', alpha=0.6, 
+                   fill=True, levels=10, label='Sleep Density')
+    
+    # Fallback to scatter if not enough points for KDE
+    if len(pc1_wake) <= 10:
+        ax5.scatter(pc1_wake, pc2_wake, c='red', alpha=0.5, s=10, label='Wake')
+    if len(pc1_sleep) <= 10:
+        ax5.scatter(pc1_sleep, pc2_sleep, c='blue', alpha=0.5, s=10, label='Sleep')
+    
+    ax5.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+    ax5.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+    ax5.set_title('PC1 vs PC2 State-Specific Density', fontsize=16, fontweight='bold')
+    ax5.legend(loc='upper right')
+    ax5.grid(True, alpha=0.3)
+    ax5.axhline(0, color='gray', linestyle='--', linewidth=0.7)
+    ax5.axvline(0, color='gray', linestyle='--', linewidth=0.7)
     
     density_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_density.png")
     plt.savefig(density_filename, dpi=300)
@@ -2672,31 +2692,7 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     pc1_wake_density_new = pc1_scores_new_plots[density_wake_mask]
     pc2_wake_density_new = pc2_scores_new_plots[density_wake_mask]
 
-    # --- Custom Colormaps for Plot A (Density) ---
-    custom_blues_colors_new = [(0, "#08306b"), (0.5, "#4292c6"), (1, "#c6dbef")] 
-    custom_blues_cmap_new = LinearSegmentedColormap.from_list("custom_blues_new", custom_blues_colors_new)
-    custom_oranges_colors_new = [(0, "#a63603"), (0.5, "#fd8d3c"), (1, "#feedde")]
-    custom_oranges_cmap_new = LinearSegmentedColormap.from_list("custom_oranges_new", custom_oranges_colors_new)
-
-    # === PLOT 5: PC1 vs PC2 State-Specific Density Plot ===
-    plt.figure(figsize=(10, 8))
-    if len(pc1_wake_density_new) > 1 and len(pc2_wake_density_new) > 1:
-        sns.kdeplot(x=pc1_wake_density_new, y=pc2_wake_density_new, cmap=custom_oranges_cmap_new, fill=True, thresh=0.05, alpha=0.75, n_levels=100, label="Wake Density")
-    if len(pc1_sleep_density_new) > 1 and len(pc2_sleep_density_new) > 1:
-        sns.kdeplot(x=pc1_sleep_density_new, y=pc2_sleep_density_new, cmap=custom_blues_cmap_new, fill=True, thresh=0.05, alpha=0.75, n_levels=100, label="Sleep Density")
-    
-    plt.xlabel(f'PC{comp1_idx + 1} ({explained_var_pc1_new:.1%} variance)')
-    plt.ylabel(f'PC{comp2_idx + 1} ({explained_var_pc2_new:.1%} variance)')
-    plt.title(f'{subject}: PC{comp1_idx + 1} vs PC{comp2_idx + 1} State-Specific Density')
-    plt.grid(True, alpha=0.3)
-    plt.axhline(0, color='gray', linestyle='--', linewidth=0.7)
-    plt.axvline(0, color='gray', linestyle='--', linewidth=0.7)
-    plt.legend()
-    plot_a_filename_new = os.path.join(output_folder, f"{subject}_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_density_states.png")
-    plt.savefig(plot_a_filename_new, dpi=300)
-    plt.show()
-
-    # === PLOT 6: PC1 vs PC2 Scatter with Discrete Phased Coloring ===
+    # === PLOT 7: PC1 vs PC2 Scatter with Discrete Phased Coloring ===
     plt.figure(figsize=(12, 10))
     
     num_phases_new = 3 

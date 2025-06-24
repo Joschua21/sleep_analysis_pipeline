@@ -252,21 +252,10 @@ def analyze_time_resolved_synchrony_matrix(combined_counts, time_bins, sleep_mas
     
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Mean Population Correlation')
-    ax.set_title(f'Population Synchrony Over Time\n'
-                f'{window_size_s}s windows, {step_size_s}s steps, {combined_counts.shape[0]} neurons')
+    ax.set_title(f'Population Synchrony Over Time')
     ax.grid(True, alpha=0.3)
     ax.set_xlim(time_bins[0], time_bins[-1])
     
-    # Add legend
-    from matplotlib.patches import Patch
-    legend_elements = [
-        plt.Line2D([0], [0], color='black', linewidth=2, label='Population Synchrony')
-    ]
-    
-    if np.sum(sleep_mask) > 0:
-        legend_elements.append(Patch(facecolor='blue', alpha=0.3, label='Sleep Periods'))
-    
-    ax.legend(handles=legend_elements, loc='upper right')
     
     plt.tight_layout()
     if output_dir:
@@ -574,6 +563,7 @@ def load_analysis_results(metadata_path=None, output_folder=None):
     print(f"\nSuccessfully loaded {len(loaded_variables)} variables")
     return loaded_variables
 
+
 def correlate_with_population_average(spike_data, lag_range_ms=100, lag_resolution_ms=1, 
                                     batch_size=100, min_firing_rate=0.001):
     """
@@ -596,75 +586,142 @@ def correlate_with_population_average(spike_data, lag_range_ms=100, lag_resoluti
     print(f"Input data shape: {spike_data.shape}")
     n_neurons, n_time_bins = spike_data.shape
     
-    # 1. Filter by firing rate but DON'T create copies yet
+    # Filter by firing rate
     firing_rates = np.mean(spike_data, axis=1)
     active_mask = firing_rates > min_firing_rate
     active_indices = np.where(active_mask)[0]
     n_active = len(active_indices)
-
-    print(f"Using {n_active}/{n_neurons} neurons (no memory copy yet)")
-
-    # 2. Setup lags
+    
+    print(f"Using {n_active}/{n_neurons} neurons (firing rate > {min_firing_rate} Hz)")
+    
+    if n_active == 0:
+        print("No active neurons found!")
+        return {}
+    
+    # Pre-compute total population activity
+    total_activity = np.sum(spike_data[active_indices], axis=0)
+    print(f"Total population activity computed: {total_activity.shape}")
+    
+    # Setup lag parameters
     max_lag_bins = int(lag_range_ms / lag_resolution_ms)
-    lag_bins = np.arange(-max_lag_bins, max_lag_bins + 1) * int(lag_resolution_ms)
-    n_lags = len(lag_bins)
-
-    # 3. Process using memory-efficient slicing
-    n_pairs = n_active * (n_active - 1) // 2
-    all_lag_correlations = np.zeros((n_pairs, n_lags))
-
-    with tqdm(total=n_lags, desc="Memory-efficient corrcoef") as pbar:
-        
-        for lag_idx, lag_offset in enumerate(lag_bins):
+    lag_offsets = np.arange(-max_lag_bins, max_lag_bins + 1) * int(lag_resolution_ms)
+    n_lags = len(lag_offsets)
+    
+    print(f"Lag parameters: ±{lag_range_ms}ms range, {lag_resolution_ms}ms resolution")
+    print(f"Total lags to compute: {n_lags}")
+    
+    # Initialize results storage
+    neuron_correlations = np.zeros((n_active, n_lags))
+    peak_correlations = np.zeros(n_active)
+    peak_lags = np.zeros(n_active)
+    
+    # Process neurons in batches
+    n_batches = int(np.ceil(n_active / batch_size))
+    print(f"Processing {n_active} neurons in {n_batches} batches of {batch_size}")
+    
+    with tqdm(total=n_active, desc="Population correlation") as pbar:
+        for batch_idx in range(n_batches):
+            # Define batch boundaries
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, n_active)
+            batch_neurons = active_indices[start_idx:end_idx]
+            current_batch_size = end_idx - start_idx
             
-            if lag_offset == 0:
-                # Zero lag: extract active neurons directly (small copy)
-                data_subset = spike_data[active_indices]  # Only copy what we need
-                corr_matrix = np.corrcoef(data_subset)
+            # Process each neuron in the batch
+            for i, neuron_idx in enumerate(batch_neurons):
+                global_neuron_idx = start_idx + i
                 
-            else:
-                # Create slices (views, not copies)
-                if lag_offset > 0:
-                    slice1 = spike_data[active_indices, :-lag_offset]
-                    slice2 = spike_data[active_indices, lag_offset:]
-                else:
-                    slice1 = spike_data[active_indices, -lag_offset:]
-                    slice2 = spike_data[active_indices, :lag_offset]
+                # Get this neuron's activity
+                neuron_activity = spike_data[neuron_idx]
                 
-                # Stack only the small slices
-                combined_small = np.vstack([slice1, slice2])
+                # Compute population activity excluding this neuron
+                excluded_population = total_activity - neuron_activity
                 
-                # corrcoef on much smaller array
-                full_corr = np.corrcoef(combined_small)
-                corr_matrix = full_corr[:n_active, n_active:]
-            
-            # Extract pairs
-            pair_idx = 0
-            for i in range(n_active):
-                for j in range(i + 1, n_active):
-                    if lag_offset == 0:
-                        all_lag_correlations[pair_idx, lag_idx] = corr_matrix[i, j]
+                # Use scipy.signal.correlate for efficient lag correlation
+                # 'full' mode gives all possible overlaps
+                full_correlation = correlate(neuron_activity, excluded_population, mode='full')
+                
+                # Extract the lags we want from the full correlation
+                # The center of full correlation corresponds to zero lag
+                center_idx = len(full_correlation) // 2
+                
+                # Extract correlations for our desired lag range
+                lag_correlations = np.zeros(n_lags)
+                
+                for lag_idx, lag_offset in enumerate(lag_offsets):
+                    lag_bin_offset = int(lag_offset)  # Already in bins since lag_resolution_ms = bin_size
+                    
+                    # Calculate index in full correlation array
+                    corr_idx = center_idx + lag_bin_offset
+                    
+                    # Check bounds
+                    if 0 <= corr_idx < len(full_correlation):
+                        # Normalize by the number of overlapping samples
+                        if lag_bin_offset >= 0:
+                            n_overlap = n_time_bins - lag_bin_offset
+                        else:
+                            n_overlap = n_time_bins + lag_bin_offset
+                        
+                        if n_overlap > 0:
+                            # Convert to correlation coefficient by normalizing
+                            # This is a simplified normalization - for proper correlation coefficient,
+                            # we'd need to account for means and standard deviations
+                            lag_correlations[lag_idx] = full_correlation[corr_idx] / n_overlap
+                        else:
+                            lag_correlations[lag_idx] = 0
                     else:
-                        all_lag_correlations[pair_idx, lag_idx] = corr_matrix[i, j]
-                    pair_idx += 1
-            
-            pbar.update(1)
-
-    # Find peaks
-    peak_correlations = np.zeros(n_pairs)
-    peak_lags = np.zeros(n_pairs)
-
-    for pair_idx in range(n_pairs):
-        lag_correlations = all_lag_correlations[pair_idx]
+                        lag_correlations[lag_idx] = 0
+                
+                # Store results for this neuron
+                neuron_correlations[global_neuron_idx] = lag_correlations
+                
+                # Find peak correlation and its lag
+                peak_idx = np.argmax(np.abs(lag_correlations))
+                peak_correlations[global_neuron_idx] = lag_correlations[peak_idx] 
+                peak_lags[global_neuron_idx] = lag_offsets[peak_idx]
+                
+                pbar.update(1)
+    
+    # Convert back to normalized correlation coefficients
+    # This is an approximation - for exact correlation coefficients we'd need more complex normalization
+    print("Converting to correlation coefficients...")
+    
+    for i in range(n_active):
+        neuron_idx = active_indices[i]
+        neuron_activity = spike_data[neuron_idx]
+        excluded_population = total_activity - neuron_activity
+        
+        # Calculate standard deviations for normalization
+        neuron_std = np.std(neuron_activity)
+        pop_std = np.std(excluded_population)
+        
+        if neuron_std > 0 and pop_std > 0:
+            # Normalize the correlation values
+            neuron_correlations[i] = neuron_correlations[i] / (neuron_std * pop_std)
+        else:
+            neuron_correlations[i] = 0
+    
+    # Update peak correlations after normalization
+    for i in range(n_active):
+        lag_correlations = neuron_correlations[i]
         peak_idx = np.argmax(np.abs(lag_correlations))
-        peak_correlations[pair_idx] = lag_correlations[peak_idx]
-        peak_lags[pair_idx] = lag_bins[peak_idx]
-
+        peak_correlations[i] = lag_correlations[peak_idx]
+        peak_lags[i] = lag_offsets[peak_idx]
+    
+    print(f"✅ Completed correlation analysis")
+    print(f"Peak correlation range: {np.min(peak_correlations):.3f} to {np.max(peak_correlations):.3f}")
+    print(f"Peak lag range: {np.min(peak_lags):.1f} to {np.max(peak_lags):.1f} ms")
+    
     return {
-        'peak_correlations': peak_correlations,
-        'peak_lags': peak_lags,
-        'n_pairs': n_pairs
+        'neuron_correlations': neuron_correlations,  # Shape: (n_active_neurons, n_lags)
+        'peak_correlations': peak_correlations,      # Shape: (n_active_neurons,)
+        'peak_lags': peak_lags,                     # Shape: (n_active_neurons,)
+        'lag_offsets': lag_offsets,                 # Shape: (n_lags,)
+        'active_neuron_indices': active_indices,    # Original indices of active neurons
+        'n_active_neurons': n_active,
+        'n_lags': n_lags
     }
+
 
 def correlate_with_population_average_by_state(spike_data, sleep_mask, wake_mask, 
                                               lag_range_ms=100, lag_resolution_ms=1, 
@@ -858,6 +915,11 @@ def correlate_with_population_average_by_state(spike_data, sleep_mask, wake_mask
         'n_active_neurons': n_active,
         'n_lags': n_lags
     }
+
+
+# ------------------------VISUALIZATION FUNCTIONS------------------------
+
+
 def analyze_state_specific_correlations(combined_counts, time_bins, sleep_mask, wake_mask, sleep_periods,
                                        output_dir=None):
     """
@@ -1106,6 +1168,7 @@ def plot_state_correlation_matrices(state_corr_results, np_results, max_neurons=
     axes[1].set_xlabel('Neuron Index (Sorted)')
     axes[1].set_ylabel('Neuron Index (Sorted)')
     plt.colorbar(im2, ax=axes[1], label='Correlation')
+
     
     # Print some statistics about the sorting
     if sorting == 'PC':
@@ -1114,11 +1177,6 @@ def plot_state_correlation_matrices(state_corr_results, np_results, max_neurons=
     elif sorting == 'MI':
         if 'modulation_indices' in locals():
             print(f"Modulation index range: {np.min(modulation_indices):.3f} to {np.max(modulation_indices):.3f}")
-    elif sorting == 'corr':
-        if 'neuron_correlations' in locals():
-            print(f"Population correlation range: {np.min(neuron_correlations):.3f} to {np.max(neuron_correlations):.3f}")
-            print(f"Top 5 most correlated neurons (original indices): {sort_indices[:5]}")
-            print(f"Top 5 correlation values: {neuron_correlations[sort_indices[:5]]}")
     
     # Overall title
     fig.suptitle(f'State-Specific Correlation Matrices ({n_neurons} neurons, sorted by {sort_label})', 
@@ -1966,6 +2024,8 @@ def plot_individual_correlograms(population_corr_results, n_random=10, specific_
         plt.savefig(f"{output_folder}/{filename}", dpi=300, bbox_inches='tight')
         print(f"Saved individual correlograms to {filename}")
     
+    plt.show()
+    
     # Print summary for plotted neurons
     print(f"\n=== INDIVIDUAL CORRELOGRAM ANALYSIS ===")
     print(f"Plotted {n_to_plot} neurons")
@@ -2005,6 +2065,7 @@ def plot_individual_correlograms(population_corr_results, n_random=10, specific_
         'peak_lags': peak_lags[plot_indices],
         'filter_hz': filter_hz
     }
+
 
 def plot_peak_lag_stripe_map(population_corr_results, filter_hz=None, output_folder=None, 
                             figsize=(12, 8), max_neurons=None, split_states=False):
@@ -2659,7 +2720,7 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
             ax.set_ylim(corr_min - 0.05, corr_max + 0.05)
         else:
             # Handle case where neuron has no valid correlations
-            ax.text(0.5, 0.5, f'Neuron {neuron_id}:\nNo valid correlations', 
+            ax.text(0.5, 0.5, f'Neuron {neuron_idx}:\nNo valid correlations', 
                     ha='center', va='center', transform=ax.transAxes, 
                     fontsize=10, color='red')
             ax.set_xlim(-1, 1)
@@ -2667,15 +2728,14 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
         
         ax.set_xlabel('Wake Correlation')
         ax.set_ylabel('Sleep Correlation')
-        ax.set_title(f'Neuron {neuron_idx}\nStability: {stability_scores[neuron_idx]:.3f}')
+        ax.set_title(f'Neuron {neuron_idx}')
         ax.grid(True, alpha=0.3)
         ax.set_xlim(corr_min, corr_max)
         ax.set_ylim(corr_min, corr_max)
         ax.set_aspect('equal')
     
     # Add overall title with proper spacing
-    fig1.suptitle('Individual Neuron Correlation Stability\n'
-                  'Each point = correlation with one partner neuron', 
+    fig1.suptitle('Correlation Preservation across States', 
                   fontsize=14, y=0.98)
     
     # Adjust spacing to prevent overlaps
@@ -2805,4 +2865,194 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
         'n_high_rrf': rrf_high_neurons,
         'n_overlap_high': high_both,
         'plotted_neurons': neurons_to_plot
+    }
+
+
+def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None, 
+                                         save_plots=True, output_folder=None,
+                                         color_by='density', figsize=(10, 8)):
+    """
+    Create a scatter plot of sleep vs wake firing rates for all neurons.
+    
+    Parameters:
+    -----------
+    np_results : dict
+        Results from analyze_sleep_wake_activity containing firing rates
+    max_neurons : int, optional
+        Maximum number of neurons to plot (for performance with large datasets)
+    save_plots : bool
+        Whether to save the plot
+    output_folder : str
+        Directory to save the plot
+    color_by : str
+        'density' for density-based coloring, 'simple' for single color, 
+        'magnitude' for average firing rate
+    figsize : tuple
+        Figure size
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing extracted firing rate values and statistics
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy.stats import gaussian_kde
+    
+    # Extract firing rates from the merged results
+    if 'merged' not in np_results:
+        raise ValueError("No 'merged' results found in np_results. Make sure analyze_sleep_wake_activity was run.")
+    
+    merged_results = np_results['merged']
+    sleep_rates = merged_results['sleep_rates']
+    wake_rates = merged_results['wake_rates']
+    
+    n_neurons = len(sleep_rates)
+    print(f"Plotting firing rates for {n_neurons} neurons")
+    
+    # Remove NaN values
+    valid_mask = ~(np.isnan(sleep_rates) | np.isnan(wake_rates))
+    sleep_rates_valid = sleep_rates[valid_mask]
+    wake_rates_valid = wake_rates[valid_mask]
+    
+    n_valid_neurons = len(sleep_rates_valid)
+    print(f"Valid neurons: {n_valid_neurons}")
+    
+    # Keep full data for density plot
+    sleep_rates_full = sleep_rates_valid.copy()
+    wake_rates_full = wake_rates_valid.copy()
+    
+    # Subsample if too many neurons for visualization (only for scatter plot)
+    if max_neurons and n_valid_neurons > max_neurons:
+        sample_indices = np.random.choice(n_valid_neurons, max_neurons, replace=False)
+        sleep_rates_scatter = sleep_rates_valid[sample_indices]
+        wake_rates_scatter = wake_rates_valid[sample_indices]
+        print(f"Subsampled to {max_neurons} neurons for scatter plot visualization")
+    else:
+        sleep_rates_scatter = sleep_rates_valid.copy()
+        wake_rates_scatter = wake_rates_valid.copy()
+    
+    # Calculate difference (sleep - wake) for statistics
+    rate_difference = sleep_rates_full - wake_rates_full
+    
+    # Create two plots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(figsize[0]*2, figsize[1]))
+    
+    # Set shared title for both subplots
+    fig.suptitle('Firing Rate across States', fontsize=16, fontweight='bold')
+    
+    # ======================== PLOT 1: Scatter Plot ========================
+    if color_by == 'density':
+        # Color by point density (useful for large datasets)
+        try:
+            # Calculate point density
+            xy = np.vstack([wake_rates_scatter, sleep_rates_scatter])
+            kde = gaussian_kde(xy)
+            density = kde(xy)
+            
+            scatter = ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
+                               c=density, cmap='viridis', alpha=0.6, s=15)
+            cbar1 = plt.colorbar(scatter, ax=ax1)
+            cbar1.set_label('Point Density', fontsize=12)
+        except:
+            # Fallback to simple coloring if density calculation fails
+            ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
+                      alpha=0.6, s=15, color='blue')
+            
+    elif color_by == 'magnitude':
+        # Color by average firing rate
+        avg_rate = (sleep_rates_scatter + wake_rates_scatter) / 2
+        scatter = ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
+                           c=avg_rate, cmap='plasma', alpha=0.6, s=15)
+        cbar1 = plt.colorbar(scatter, ax=ax1)
+        cbar1.set_label('Average Firing Rate (Hz)', fontsize=12)
+        
+    else:  # simple
+        ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
+                  alpha=0.6, s=15, color='blue')
+    
+    # Add diagonal line (x = y, where sleep = wake)
+    min_rate = min(np.min(wake_rates_full), np.min(sleep_rates_full))
+    max_rate = max(np.max(wake_rates_full), np.max(sleep_rates_full))
+    ax1.plot([min_rate, max_rate], [min_rate, max_rate], 
+            'r--', alpha=0.7, linewidth=2, label='Sleep = Wake')
+    
+    # Formatting for scatter plot
+    ax1.set_xlabel('Firing Rate (Wake)', fontsize=14)
+    ax1.set_ylabel('Firing Rate (Sleep)', fontsize=14)
+    ax1.set_title(f'Scatter Plot', 
+                fontsize=14)
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    ax1.set_xlim(min(-1, min_rate), max_rate)
+    ax1.set_ylim(min(-1, min_rate), max_rate)
+    ax1.set_aspect('equal')
+    
+    # ======================== PLOT 2: Hexbin Density Plot ========================
+    # Create hexbin plot using the full dataset
+    # gridsize controls resolution (higher = more detail, but slower)
+    gridsize = 50  # Adjust this for resolution vs performance
+    
+    # Create hexbin plot - automatically handles density calculation
+    hexbin = ax2.hexbin(wake_rates_full, sleep_rates_full, 
+                   gridsize=gridsize, cmap='viridis', mincnt=1,
+                   extent=[min_rate, max_rate, min_rate, max_rate])
+    
+    # Add colorbar for hexbin plot
+    cbar2 = plt.colorbar(hexbin, ax=ax2)
+    cbar2.set_label('Number of Neurons', fontsize=12)
+    
+    # Add diagonal line
+    ax2.plot([min_rate, max_rate], [min_rate, max_rate], 
+            'r--', alpha=0.8, linewidth=2, label='Sleep = Wake')
+    
+    # Formatting for density plot
+    ax2.set_xlabel('Firing Rate (Wake)', fontsize=14)
+    ax2.set_ylabel('Firing Rate (Sleep)', fontsize=14)
+    ax2.set_title(f'Density Plot', 
+                fontsize=14)
+    ax2.legend()
+    ax2.set_xlim(min(-1, min_rate), max_rate)
+    ax2.set_ylim(min(-1, min_rate), max_rate)
+    
+    # Calculate statistics
+    sleep_wake_corr = np.corrcoef(sleep_rates_full, wake_rates_full)[0, 1]
+    
+    # Count points above/below diagonal
+    above_diagonal = np.sum(sleep_rates_full > wake_rates_full)  # Higher in sleep
+    below_diagonal = np.sum(sleep_rates_full < wake_rates_full)  # Higher in wake
+    on_diagonal = np.sum(sleep_rates_full == wake_rates_full)    # Equal
+    
+    plt.tight_layout()
+    
+    # Save plots if requested
+    if save_plots and output_folder:
+        plot_filename = 'sleep_vs_wake_firing_rate_scatter_and_density.png'
+        plot_path = os.path.join(output_folder, plot_filename)
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"Combined firing rate scatter and density plot saved: {plot_path}")
+    
+    plt.show()
+    
+    # Print summary statistics
+    print(f"\n=== FIRING RATE SCATTER ANALYSIS ===")
+    print(f"Total valid neurons: {len(sleep_rates_full):,}")
+    print(f"Correlation between sleep and wake firing rates: {sleep_wake_corr:.3f}")
+    print(f"Mean firing rate difference (sleep - wake): {np.mean(rate_difference):.4f} Hz")
+    print(f"Neurons with higher sleep rates: {above_diagonal:,} ({above_diagonal/len(sleep_rates_full)*100:.1f}%)")
+    print(f"Neurons with higher wake rates: {below_diagonal:,} ({below_diagonal/len(sleep_rates_full)*100:.1f}%)")
+    print(f"Mean sleep firing rate: {np.mean(sleep_rates_full):.4f} Hz")
+    print(f"Mean wake firing rate: {np.mean(wake_rates_full):.4f} Hz")
+    
+    return {
+        'sleep_rates': sleep_rates_full,
+        'wake_rates': wake_rates_full,
+        'rate_difference': rate_difference,
+        'sleep_wake_correlation': sleep_wake_corr,
+        'n_neurons': len(sleep_rates_full),
+        'above_diagonal': above_diagonal,
+        'below_diagonal': below_diagonal,
+        'on_diagonal': on_diagonal,
+        'mean_sleep_rate': np.mean(sleep_rates_full),
+        'mean_wake_rate': np.mean(wake_rates_full)
     }
