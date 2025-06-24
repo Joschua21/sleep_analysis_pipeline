@@ -1637,7 +1637,10 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         for _, bout in sleep_bouts.iterrows():
             # Remove the in_range check to ensure all bouts are included
             sleep_starts.append(bout['start_timestamp_s'])
-            sleep_ends.append(bout['end_timestamp_s'])
+            sleep_ends.append(bout['end_bin_time'])
+        for _, bout in sleep_bouts.iterrows():
+            ax1.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+            color='lightblue', alpha=0.3, ec='none')
                 
         # Add binary sleep/wake indicator at the top of the plot
         # Calculate appropriate height for the indicator line (just above the top of the plot)
@@ -2566,10 +2569,10 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
               c='orange', alpha=0.5, s=5, label='Wake') # Wake is orange
     ax1.scatter(pca_result[sleep_mask_orig, comp1_idx], pca_result[sleep_mask_orig, comp2_idx], 
               c='blue', alpha=0.5, s=5, label='Sleep')   # Sleep is blue
-    ax1.set_xlabel(f'PC{comp1_idx+1} ({pca.explained_variance_ratio_[comp1_idx]:.1%} variance)')
-    ax1.set_ylabel(f'PC{comp2_idx+1} ({pca.explained_variance_ratio_[comp2_idx]:.1%} variance)')
-    ax1.set_title(f'{subject}: Neural State Space PC{comp1_idx+1} vs PC{comp2_idx+1}')
-    ax1.legend()
+    ax1.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+    ax1.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+    ax1.set_title('PC1 vs PC2', fontsize=16, fontweight='bold')
+    ax1.legend(fontsize=12)
     ax1.grid(True, alpha=0.3)
     ax1.axhline(0, color='gray', linestyle='--', linewidth=0.7)
     ax1.axvline(0, color='gray', linestyle='--', linewidth=0.7)
@@ -2616,10 +2619,11 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     pc2 = pca_result[:, comp2_idx]
     
     hb = ax4.hexbin(pc1, pc2, gridsize=30, cmap='viridis', alpha=0.7)
-    ax4.set_xlabel(f'PC{comp1_idx+1}')
-    ax4.set_ylabel(f'PC{comp2_idx+1}')
-    ax4.set_title(f'PC{comp1_idx+1} vs PC{comp2_idx+1} Density')
-    plt.colorbar(hb, ax=ax4, label='Count')
+    ax4.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+    ax4.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+    ax4.set_title('PC1 vs PC2 Density', fontsize=16, fontweight='bold')
+    cb = plt.colorbar(hb, ax=ax4)
+    cb.set_label('Count', fontsize=14)
     ax4.grid(True, alpha=0.3)
     ax4.axhline(0, color='gray', linestyle='--', linewidth=0.7)
     ax4.axvline(0, color='gray', linestyle='--', linewidth=0.7)
@@ -3015,14 +3019,40 @@ def plot_pc_spectrogram(pc_data, time_bins_pca, df_neural_sleep, subject_name, o
         plt.close(fig)
 
 
-
 def plot_pca_with_behavioral_features(pca_results, neural_sleep_df, dlc_folder, smoothed_results, 
                                     subject, output_folder, components_to_plot=(0, 1), 
-                                    movement_upper_limit=740000):
+                                    movement_upper_limit=740000, plot_together=True, figsize_individual=(10, 8)):
     """
     Create six PC1 vs PC2 plots with different coloring schemes:
     Row 1: Sleep/Wake, Movement (sorted), Delta power
     Row 2: Movement (random order), Low movement (<0.5), High movement (>=0.5)
+    
+    Parameters:
+    ----------
+    pca_results : dict
+        Results from analyze_neural_pca
+    neural_sleep_df : DataFrame
+        DataFrame containing sleep bout information
+    dlc_folder : str
+        Path to the DLC folder containing behavioral data
+    smoothed_results : dict
+        Results from power_band_smoothing containing delta power
+    subject : str
+        Subject ID for plot titles
+    output_folder : str
+        Directory to save output plots
+    components_to_plot : tuple
+        Which components to plot (zero-indexed)
+    movement_upper_limit : float
+        Upper limit for movement data capping
+    plot_together : bool
+        If True, plot all subplots in one 3x2 figure. If False, plot individually.
+    figsize_individual : tuple
+        Figure size for individual plots (width, height)
+        
+    Returns:
+    --------
+    None
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -3128,196 +3158,326 @@ def plot_pca_with_behavioral_features(pca_results, neural_sleep_df, dlc_folder, 
                 else:
                     delta_normalized = np.zeros_like(delta_values)
     
-    # Create figure with 2x3 subplots (original proportions)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    
-    # Calculate axis limits for comparison (but don't force square)
-    all_pc1 = pc1_scores
-    all_pc2 = pc2_scores
-    
-    pc1_margin = (np.max(all_pc1) - np.min(all_pc1)) * 0.05
-    pc2_margin = (np.max(all_pc2) - np.min(all_pc2)) * 0.05
-    
-    xlim = [np.min(all_pc1) - pc1_margin, np.max(all_pc1) + pc1_margin]
-    ylim = [np.min(all_pc2) - pc2_margin, np.max(all_pc2) + pc2_margin]
-    
     # Helper function to set up each subplot
     def setup_subplot(ax, title):
-        ax.set_xlabel(f'PC{comp1_idx+1} ({explained_var_pc1:.1%} variance)')
-        ax.set_ylabel(f'PC{comp2_idx+1} ({explained_var_pc2:.1%} variance)')
-        ax.set_title(f'{subject}: {title}')
+        ax.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+        ax.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+        ax.set_title(f'{subject}: {title}', fontsize=16, fontweight='bold')
         ax.grid(True, alpha=0.3)
         ax.axhline(0, color='gray', linestyle='--', linewidth=0.7)
         ax.axvline(0, color='gray', linestyle='--', linewidth=0.7)
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
     
-    # --- Plot 1: Sleep/Wake state coloring ---
-    sleep_mask = state_labels_pca == 1
-    wake_mask = state_labels_pca == 0
+    # Define plot titles and data
+    plot_titles = [
+        'Sleep/Wake States',
+        'Movement Intensity (Sorted)',
+        'Delta Power',
+        'Movement Intensity (Random)',
+        'Low Movement (<0.5)',
+        'High Movement (≥0.5)'
+    ]
     
-    axes[0,0].scatter(pc1_scores[wake_mask], pc2_scores[wake_mask], 
-                     c='orange', alpha=0.5, s=5, label='Wake')
-    axes[0,0].scatter(pc1_scores[sleep_mask], pc2_scores[sleep_mask], 
-                     c='blue', alpha=0.5, s=5, label='Sleep')
-    axes[0,0].legend()
-    setup_subplot(axes[0,0], 'Sleep/Wake States')
-    
-    # --- Plot 2: Movement intensity (sorted order) ---
-    if movement_normalized is not None:
-        valid_points = ~np.isnan(movement_normalized)
-        if np.sum(valid_points) > 0:
-            # Sort by movement intensity (low to high) so high movement is on top
-            valid_indices = np.where(valid_points)[0]
-            movement_values_valid = movement_normalized[valid_indices]
-            sort_order = np.argsort(movement_values_valid)
-            sorted_indices = valid_indices[sort_order]
-            
-            scatter2 = axes[0,1].scatter(pc1_scores[sorted_indices], pc2_scores[sorted_indices], 
-                                       c=movement_normalized[sorted_indices], 
-                                       cmap='coolwarm', alpha=0.6, s=5, vmin=0, vmax=1)
-            
-            # Plot points without movement data in gray
-            invalid_points = np.isnan(movement_normalized)
-            if np.sum(invalid_points) > 0:
-                axes[0,1].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
-                                c='lightgray', alpha=0.3, s=5)
-            
-            cbar2 = plt.colorbar(scatter2, ax=axes[0,1])
-            cbar2.set_label(f'Movement (Sorted)\nBlue=Low, Red=High')
+    if plot_together:
+        # Create 2x3 subplot layout
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        
+        # Plot 1: Sleep/Wake state coloring
+        sleep_mask = state_labels_pca == 1
+        wake_mask = state_labels_pca == 0
+        
+        axes[0,0].scatter(pc1_scores[wake_mask], pc2_scores[wake_mask], 
+                         c='orange', alpha=0.5, s=5, label='Wake')
+        axes[0,0].scatter(pc1_scores[sleep_mask], pc2_scores[sleep_mask], 
+                         c='blue', alpha=0.5, s=5, label='Sleep')
+        axes[0,0].legend()
+        setup_subplot(axes[0,0], plot_titles[0])
+        
+        # Plot 2: Movement intensity (sorted order)
+        if movement_normalized is not None:
+            valid_points = ~np.isnan(movement_normalized)
+            if np.sum(valid_points) > 0:
+                valid_indices = np.where(valid_points)[0]
+                movement_values_valid = movement_normalized[valid_indices]
+                sort_order = np.argsort(movement_values_valid)
+                sorted_indices = valid_indices[sort_order]
+                
+                scatter2 = axes[0,1].scatter(pc1_scores[sorted_indices], pc2_scores[sorted_indices], 
+                                           c=movement_normalized[sorted_indices], 
+                                           cmap='coolwarm', alpha=0.6, s=5, vmin=0, vmax=1)
+                
+                invalid_points = np.isnan(movement_normalized)
+                if np.sum(invalid_points) > 0:
+                    axes[0,1].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
+                                    c='lightgray', alpha=0.3, s=5)
+                
+                cbar2 = plt.colorbar(scatter2, ax=axes[0,1], shrink=0.8)
+                cbar2.set_label(f'Movement (Sorted)\nBlue=Low, Red=High')
+            else:
+                axes[0,1].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
+                axes[0,1].text(0.5, 0.5, 'No valid movement data', 
+                             ha='center', va='center', transform=axes[0,1].transAxes)
         else:
             axes[0,1].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-            axes[0,1].text(0.5, 0.5, 'No valid movement data', 
+            axes[0,1].text(0.5, 0.5, 'Movement data\nnot available', 
                          ha='center', va='center', transform=axes[0,1].transAxes)
-    else:
-        axes[0,1].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-        axes[0,1].text(0.5, 0.5, 'Movement data\nnot available', 
-                     ha='center', va='center', transform=axes[0,1].transAxes)
-    
-    setup_subplot(axes[0,1], 'Movement Intensity (Sorted)')
-    
-    # --- Plot 3: Delta power coloring ---
-    if delta_normalized is not None:
-        valid_points = ~np.isnan(delta_normalized)
-        if np.sum(valid_points) > 0:
-            scatter3 = axes[0,2].scatter(pc1_scores[valid_points], pc2_scores[valid_points], 
-                                       c=delta_normalized[valid_points], 
-                                       cmap='coolwarm_r', alpha=0.7, s=5, vmin=0, vmax=1)
-            
-            invalid_points = np.isnan(delta_normalized)
-            if np.sum(invalid_points) > 0:
-                axes[0,2].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
-                                c='lightgray', alpha=0.3, s=5)
-            
-            cbar3 = plt.colorbar(scatter3, ax=axes[0,2])
-            cbar3.set_label('Delta Power\n(Red=Low, Blue=High)')
+        
+        setup_subplot(axes[0,1], plot_titles[1])
+        
+        # Plot 3: Delta power coloring
+        if delta_normalized is not None:
+            valid_points = ~np.isnan(delta_normalized)
+            if np.sum(valid_points) > 0:
+                scatter3 = axes[0,2].scatter(pc1_scores[valid_points], pc2_scores[valid_points], 
+                                           c=delta_normalized[valid_points], 
+                                           cmap='coolwarm_r', alpha=0.7, s=5, vmin=0, vmax=1)
+                
+                invalid_points = np.isnan(delta_normalized)
+                if np.sum(invalid_points) > 0:
+                    axes[0,2].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
+                                    c='lightgray', alpha=0.3, s=5)
+                
+                cbar3 = plt.colorbar(scatter3, ax=axes[0,2], shrink=0.8)
+                cbar3.set_label('Delta Power\n(Red=Low, Blue=High)')
+            else:
+                axes[0,2].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
+                axes[0,2].text(0.5, 0.5, 'No valid delta power data', 
+                             ha='center', va='center', transform=axes[0,2].transAxes)
         else:
             axes[0,2].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-            axes[0,2].text(0.5, 0.5, 'No valid delta power data', 
+            axes[0,2].text(0.5, 0.5, 'Delta power data\nnot available', 
                          ha='center', va='center', transform=axes[0,2].transAxes)
-    else:
-        axes[0,2].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-        axes[0,2].text(0.5, 0.5, 'Delta power data\nnot available', 
-                     ha='center', va='center', transform=axes[0,2].transAxes)
-    
-    setup_subplot(axes[0,2], 'Delta Power')
-    
-    # --- Plot 4: Movement intensity (random order) ---
-    if movement_normalized is not None:
-        valid_points = ~np.isnan(movement_normalized)
-        if np.sum(valid_points) > 0:
-            # Random order for plotting
-            valid_indices = np.where(valid_points)[0]
-            np.random.shuffle(valid_indices)
-            
-            scatter4 = axes[1,0].scatter(pc1_scores[valid_indices], pc2_scores[valid_indices], 
-                                       c=movement_normalized[valid_indices], 
-                                       cmap='coolwarm', alpha=0.6, s=5, vmin=0, vmax=1)
-            
-            invalid_points = np.isnan(movement_normalized)
-            if np.sum(invalid_points) > 0:
-                axes[1,0].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
-                                c='lightgray', alpha=0.3, s=5)
-            
-            cbar4 = plt.colorbar(scatter4, ax=axes[1,0])
-            cbar4.set_label(f'Movement (Random)\nBlue=Low, Red=High')
+        
+        setup_subplot(axes[0,2], plot_titles[2])
+        
+        # Plot 4: Movement intensity (random order)
+        if movement_normalized is not None:
+            valid_points = ~np.isnan(movement_normalized)
+            if np.sum(valid_points) > 0:
+                valid_indices = np.where(valid_points)[0]
+                np.random.shuffle(valid_indices)
+                
+                scatter4 = axes[1,0].scatter(pc1_scores[valid_indices], pc2_scores[valid_indices], 
+                                           c=movement_normalized[valid_indices], 
+                                           cmap='coolwarm', alpha=0.6, s=5, vmin=0, vmax=1)
+                
+                invalid_points = np.isnan(movement_normalized)
+                if np.sum(invalid_points) > 0:
+                    axes[1,0].scatter(pc1_scores[invalid_points], pc2_scores[invalid_points], 
+                                    c='lightgray', alpha=0.3, s=5)
+                
+                cbar4 = plt.colorbar(scatter4, ax=axes[1,0], shrink=0.8)
+                cbar4.set_label(f'Movement (Random)\nBlue=Low, Red=High')
+            else:
+                axes[1,0].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
+                axes[1,0].text(0.5, 0.5, 'No valid movement data', 
+                             ha='center', va='center', transform=axes[1,0].transAxes)
         else:
             axes[1,0].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-            axes[1,0].text(0.5, 0.5, 'No valid movement data', 
+            axes[1,0].text(0.5, 0.5, 'Movement data\nnot available', 
                          ha='center', va='center', transform=axes[1,0].transAxes)
-    else:
-        axes[1,0].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-        axes[1,0].text(0.5, 0.5, 'Movement data\nnot available', 
-                     ha='center', va='center', transform=axes[1,0].transAxes)
-    
-    setup_subplot(axes[1,0], 'Movement Intensity (Random)')
-    
-    # --- Plot 5: Low movement (<0.5) ---
-    if movement_normalized is not None:
-        valid_points = ~np.isnan(movement_normalized)
-        low_movement_mask = valid_points & (movement_normalized < 0.5)
         
-        if np.sum(low_movement_mask) > 0:
-            # Use full 0-1 colormap but only show low movement points
-            scatter5 = axes[1,1].scatter(pc1_scores[low_movement_mask], pc2_scores[low_movement_mask], 
-                                       c=movement_normalized[low_movement_mask], 
-                                       cmap='coolwarm', alpha=0.7, s=5, vmin=0, vmax=1)
-            cbar5 = plt.colorbar(scatter5, ax=axes[1,1])
-            cbar5.set_label('Movement (<0.5)\nBlue=Low, Red=High')
+        setup_subplot(axes[1,0], plot_titles[3])
+        
+        # Plot 5: Low movement (<0.5)
+        if movement_normalized is not None:
+            valid_points = ~np.isnan(movement_normalized)
+            low_movement_mask = valid_points & (movement_normalized < 0.5)
+            
+            if np.sum(low_movement_mask) > 0:
+                scatter5 = axes[1,1].scatter(pc1_scores[low_movement_mask], pc2_scores[low_movement_mask], 
+                                           c=movement_normalized[low_movement_mask], 
+                                           cmap='coolwarm', alpha=0.7, s=5, vmin=0, vmax=1)
+                cbar5 = plt.colorbar(scatter5, ax=axes[1,1], shrink=0.8)
+                cbar5.set_label('Movement (<0.5)\nBlue=Low, Red=High')
+            else:
+                axes[1,1].text(0.5, 0.5, 'No low movement data', 
+                             ha='center', va='center', transform=axes[1,1].transAxes)
+            
+            other_points = ~low_movement_mask
+            if np.sum(other_points) > 0:
+                axes[1,1].scatter(pc1_scores[other_points], pc2_scores[other_points], 
+                                c='lightgray', alpha=0.2, s=3)
         else:
-            axes[1,1].text(0.5, 0.5, 'No low movement data', 
+            axes[1,1].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
+            axes[1,1].text(0.5, 0.5, 'Movement data\nnot available', 
                          ha='center', va='center', transform=axes[1,1].transAxes)
         
-        # Plot other points in gray
-        other_points = ~low_movement_mask
-        if np.sum(other_points) > 0:
-            axes[1,1].scatter(pc1_scores[other_points], pc2_scores[other_points], 
-                            c='lightgray', alpha=0.2, s=3)
-    else:
-        axes[1,1].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-        axes[1,1].text(0.5, 0.5, 'Movement data\nnot available', 
-                     ha='center', va='center', transform=axes[1,1].transAxes)
-    
-    setup_subplot(axes[1,1], 'Low Movement (<0.5)')
-    
-    # --- Plot 6: High movement (>=0.5) ---
-    if movement_normalized is not None:
-        valid_points = ~np.isnan(movement_normalized)
-        high_movement_mask = valid_points & (movement_normalized >= 0.5)
+        setup_subplot(axes[1,1], plot_titles[4])
         
-        if np.sum(high_movement_mask) > 0:
-            # Use full 0-1 colormap but only show high movement points
-            scatter6 = axes[1,2].scatter(pc1_scores[high_movement_mask], pc2_scores[high_movement_mask], 
-                                       c=movement_normalized[high_movement_mask], 
-                                       cmap='coolwarm', alpha=0.7, s=5, vmin=0, vmax=1)
-            cbar6 = plt.colorbar(scatter6, ax=axes[1,2])
-            cbar6.set_label('Movement (≥0.5)\nBlue=Low, Red=High')
+        # Plot 6: High movement (>=0.5)
+        if movement_normalized is not None:
+            valid_points = ~np.isnan(movement_normalized)
+            high_movement_mask = valid_points & (movement_normalized >= 0.5)
+            
+            if np.sum(high_movement_mask) > 0:
+                scatter6 = axes[1,2].scatter(pc1_scores[high_movement_mask], pc2_scores[high_movement_mask], 
+                                           c=movement_normalized[high_movement_mask], 
+                                           cmap='coolwarm', alpha=0.7, s=5, vmin=0, vmax=1)
+                cbar6 = plt.colorbar(scatter6, ax=axes[1,2], shrink=0.8)
+                cbar6.set_label('Movement (≥0.5)\nBlue=Low, Red=High')
+            else:
+                axes[1,2].text(0.5, 0.5, 'No high movement data', 
+                             ha='center', va='center', transform=axes[1,2].transAxes)
+            
+            other_points = ~high_movement_mask
+            if np.sum(other_points) > 0:
+                axes[1,2].scatter(pc1_scores[other_points], pc2_scores[other_points], 
+                                c='lightgray', alpha=0.2, s=3)
         else:
-            axes[1,2].text(0.5, 0.5, 'No high movement data', 
+            axes[1,2].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
+            axes[1,2].text(0.5, 0.5, 'Movement data\nnot available', 
                          ha='center', va='center', transform=axes[1,2].transAxes)
         
-        # Plot other points in gray
-        other_points = ~high_movement_mask
-        if np.sum(other_points) > 0:
-            axes[1,2].scatter(pc1_scores[other_points], pc2_scores[other_points], 
-                            c='lightgray', alpha=0.2, s=3)
-    else:
-        axes[1,2].scatter(pc1_scores, pc2_scores, c='lightgray', alpha=0.5, s=5)
-        axes[1,2].text(0.5, 0.5, 'Movement data\nnot available', 
-                     ha='center', va='center', transform=axes[1,2].transAxes)
-    
-    setup_subplot(axes[1,2], 'High Movement (≥0.5)')
-    
-    plt.tight_layout()
-    
-    # Save the plot
-    if output_folder:
-        filename = f"{subject}_pca_behavioral_features_extended_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_movlim{movement_upper_limit:.0f}.png"
-        filepath = os.path.join(output_folder, filename)
-        plt.savefig(filepath, dpi=300, bbox_inches='tight')
-        print(f"Saved plot to: {filepath}")
+        setup_subplot(axes[1,2], plot_titles[5])
         
-    return fig
+        plt.tight_layout()
+        
+        # Save combined plot
+        combined_filename = os.path.join(output_folder, f"{subject}_pca_behavioral_features_combined.png")
+        plt.savefig(combined_filename, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+    else:
+        # Helper functions for individual plots
+        def plot_movement_sorted(ax, pc1, pc2, movement_norm):
+            if movement_norm is not None:
+                valid_points = ~np.isnan(movement_norm)
+                if np.sum(valid_points) > 0:
+                    valid_indices = np.where(valid_points)[0]
+                    movement_values_valid = movement_norm[valid_indices]
+                    sort_order = np.argsort(movement_values_valid)
+                    sorted_indices = valid_indices[sort_order]
+                    
+                    scatter = ax.scatter(pc1[sorted_indices], pc2[sorted_indices], 
+                                       c=movement_norm[sorted_indices], 
+                                       cmap='coolwarm', alpha=0.6, s=10, vmin=0, vmax=1)
+                    
+                    invalid_points = np.isnan(movement_norm)
+                    if np.sum(invalid_points) > 0:
+                        ax.scatter(pc1[invalid_points], pc2[invalid_points], 
+                                 c='lightgray', alpha=0.3, s=10)
+                    
+                    plt.colorbar(scatter, ax=ax, shrink=0.8, label='Movement (Sorted)\nBlue=Low, Red=High')
+                else:
+                    ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                    ax.text(0.5, 0.5, 'No valid movement data', 
+                           ha='center', va='center', transform=ax.transAxes)
+            else:
+                ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                ax.text(0.5, 0.5, 'Movement data\nnot available', 
+                       ha='center', va='center', transform=ax.transAxes)
+        
+        def plot_delta_power(ax, pc1, pc2, delta_norm):
+            if delta_norm is not None:
+                valid_points = ~np.isnan(delta_norm)
+                if np.sum(valid_points) > 0:
+                    scatter = ax.scatter(pc1[valid_points], pc2[valid_points], 
+                                       c=delta_norm[valid_points], 
+                                       cmap='coolwarm_r', alpha=0.7, s=10, vmin=0, vmax=1)
+                    
+                    invalid_points = np.isnan(delta_norm)
+                    if np.sum(invalid_points) > 0:
+                        ax.scatter(pc1[invalid_points], pc2[invalid_points], 
+                                 c='lightgray', alpha=0.3, s=10)
+                    
+                    plt.colorbar(scatter, ax=ax, shrink=0.8, label='Delta Power\n(Red=Low, Blue=High)')
+                else:
+                    ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                    ax.text(0.5, 0.5, 'No valid delta power data', 
+                           ha='center', va='center', transform=ax.transAxes)
+            else:
+                ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                ax.text(0.5, 0.5, 'Delta power data\nnot available', 
+                       ha='center', va='center', transform=ax.transAxes)
+        
+        def plot_movement_random(ax, pc1, pc2, movement_norm):
+            if movement_norm is not None:
+                valid_points = ~np.isnan(movement_norm)
+                if np.sum(valid_points) > 0:
+                    valid_indices = np.where(valid_points)[0]
+                    np.random.shuffle(valid_indices)
+                    
+                    scatter = ax.scatter(pc1[valid_indices], pc2[valid_indices], 
+                                       c=movement_norm[valid_indices], 
+                                       cmap='coolwarm', alpha=0.6, s=10, vmin=0, vmax=1)
+                    
+                    invalid_points = np.isnan(movement_norm)
+                    if np.sum(invalid_points) > 0:
+                        ax.scatter(pc1[invalid_points], pc2[invalid_points], 
+                                 c='lightgray', alpha=0.3, s=10)
+                    
+                    plt.colorbar(scatter, ax=ax, shrink=0.8, label='Movement (Random)\nBlue=Low, Red=High')
+                else:
+                    ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                    ax.text(0.5, 0.5, 'No valid movement data', 
+                           ha='center', va='center', transform=ax.transAxes)
+            else:
+                ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                ax.text(0.5, 0.5, 'Movement data\nnot available', 
+                       ha='center', va='center', transform=ax.transAxes)
+        
+        def plot_movement_threshold(ax, pc1, pc2, movement_norm, operator, threshold):
+            if movement_norm is not None:
+                valid_points = ~np.isnan(movement_norm)
+                if operator == '<':
+                    threshold_mask = valid_points & (movement_norm < threshold)
+                    label_suffix = f'(<{threshold})'
+                else:
+                    threshold_mask = valid_points & (movement_norm >= threshold)
+                    label_suffix = f'(≥{threshold})'
+                
+                if np.sum(threshold_mask) > 0:
+                    scatter = ax.scatter(pc1[threshold_mask], pc2[threshold_mask], 
+                                       c=movement_norm[threshold_mask], 
+                                       cmap='coolwarm', alpha=0.7, s=10, vmin=0, vmax=1)
+                    plt.colorbar(scatter, ax=ax, shrink=0.8, label=f'Movement {label_suffix}\nBlue=Low, Red=High')
+                else:
+                    ax.text(0.5, 0.5, f'No {operator.replace("<", "low").replace(">=", "high")} movement data', 
+                           ha='center', va='center', transform=ax.transAxes)
+                
+                other_points = ~threshold_mask
+                if np.sum(other_points) > 0:
+                    ax.scatter(pc1[other_points], pc2[other_points], 
+                             c='lightgray', alpha=0.2, s=5)
+            else:
+                ax.scatter(pc1, pc2, c='lightgray', alpha=0.5, s=10)
+                ax.text(0.5, 0.5, 'Movement data\nnot available', 
+                       ha='center', va='center', transform=ax.transAxes)
+        
+        # Create individual plots
+        for i, title in enumerate(plot_titles):
+            fig, ax = plt.subplots(figsize=figsize_individual)
+            
+            if i == 0:  # Sleep/Wake plot
+                ax.scatter(pc1_scores[state_labels_pca == 0], pc2_scores[state_labels_pca == 0], 
+                          c='orange', alpha=0.5, s=10, label='Wake')
+                ax.scatter(pc1_scores[state_labels_pca == 1], pc2_scores[state_labels_pca == 1], 
+                          c='blue', alpha=0.5, s=10, label='Sleep')
+                ax.legend()
+            elif i == 1:  # Movement sorted
+                plot_movement_sorted(ax, pc1_scores, pc2_scores, movement_normalized)
+            elif i == 2:  # Delta power
+                plot_delta_power(ax, pc1_scores, pc2_scores, delta_normalized)
+            elif i == 3:  # Movement random
+                plot_movement_random(ax, pc1_scores, pc2_scores, movement_normalized)
+            elif i == 4:  # Low movement
+                plot_movement_threshold(ax, pc1_scores, pc2_scores, movement_normalized, '<', 0.5)
+            elif i == 5:  # High movement
+                plot_movement_threshold(ax, pc1_scores, pc2_scores, movement_normalized, '>=', 0.5)
+            
+            setup_subplot(ax, title)
+            
+            plt.tight_layout()
+            
+            # Save individual plot
+            safe_title = title.replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '').replace('<', 'lt').replace('≥', 'gte')
+            individual_filename = os.path.join(output_folder, f"{subject}_pca_{safe_title}_individual.png")
+            plt.savefig(individual_filename, dpi=300, bbox_inches='tight')
+            plt.show()
+    
+    print(f"Behavioral feature plots saved to {output_folder}")
+
+
 def analyze_pca_across_bin_sizes(
     spike_recordings,
     cluster_quality_maps,
@@ -3800,11 +3960,10 @@ def correlate_pc_with_movement(pca_results, dlc_folder, pc_index=1, time_range=N
         'n_points': len(final_pc_data)
     }
 
-
 def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
                                subject, output_folder, regions_to_analyze, 
                                movement_column='smoothed_difference', components_to_plot=(0, 1),
-                               use_sg_filter=True, movement_upper_limit=800000):
+                               use_sg_filter=True, movement_upper_limit=800000, behavior='movement'):  
     """
     Analyze specific regions of PC space over time with behavioral and spectral context.
     Creates separate plot sets for each region with movement-intensity coloring.
@@ -3833,6 +3992,8 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         Which PC components to use (default: (0, 1) for PC1 vs PC2)
     use_sg_filter : bool
         Whether to use Savitzky-Golay (True) or moving average (False) filtered delta power
+    behavior : str
+        Type of behavioral data to plot: 'movement' or 'delta'
         
     Returns:
     --------
@@ -3859,64 +4020,127 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
     pc2 = pc_data[:, comp2_idx]
     
     print(f"PC{comp1_idx+1} vs PC{comp2_idx+1} analysis: {len(pc1)} time points")
+    print(f"Behavior type: {behavior}")
     
-    # Load behavioral data (movement)
-    pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
-    pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
-                       if f.endswith('.csv') and 'pixel_differences' in f]
+    # Load behavioral data based on behavior parameter
+    if behavior == 'movement':
+        # Load movement data
+        pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+        pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                           if f.endswith('.csv') and 'pixel_differences' in f]
+        
+        if not pixel_diff_files:
+            print(f"No pixel difference CSV found in {pixel_diff_path}")
+            return None
+        
+        # Load movement data
+        pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+        try:
+            behavior_data = pd.read_csv(pixel_diff_file)
+            behavior_time = behavior_data['time_sec'].values
+            behavior_values = behavior_data[movement_column].values
+            
+            # Remove NaN values
+            valid_mask = ~np.isnan(behavior_values)
+            behavior_time = behavior_time[valid_mask]
+            behavior_values = behavior_values[valid_mask]
+            
+            behavior_label = 'Movement (pixels)'
+            behavior_title = 'Movement Over Time'
+            
+            print(f"Movement data loaded: {len(behavior_values)} points")
+            
+        except Exception as e:
+            print(f"Error loading behavioral data: {e}")
+            return None
+            
+        if behavior_values is not None:
+            # Apply movement capping (same as plot_pca_with_behavioral_features)
+            movement_min = np.nanmin(behavior_values)
+            movement_max = np.nanmax(behavior_values)
+            
+            print(f"Original movement range: {movement_min:.0f} to {movement_max:.0f}")
+            print(f"Applying upper limit cap at: {movement_upper_limit}")
+            
+            # Cap the movement values
+            behavior_values_capped = np.clip(behavior_values, movement_min, movement_upper_limit)
+            
+            # Update the behavior_values for all subsequent processing
+            behavior_values = behavior_values_capped
+            
+            capped_max = np.nanmax(behavior_values)
+            print(f"Capped movement range: {movement_min:.0f} to {capped_max:.0f}")
+            
+    elif behavior == 'delta':
+        # Get delta power data from smoothed_results
+        band_powers = None
+        filter_type = None
+        
+        # Determine which filter was used
+        if output_folder:
+            sleep_times_csv = os.path.join(output_folder, "sleep_times.csv")
+            if os.path.exists(sleep_times_csv):
+                try:
+                    sleep_df = pd.read_csv(sleep_times_csv)
+                    if 'filter' in sleep_df.columns and len(sleep_df) > 0:
+                        filter_name = sleep_df['filter'].iloc[0]
+                        if 'Savitzky-Golay' in filter_name:
+                            filter_type = 'SG'
+                            if 'savitzky_golay' in smoothed_results:
+                                band_powers = smoothed_results['savitzky_golay']
+                        elif 'MovingAverage' in filter_name or 'Moving Average' in filter_name:
+                            filter_type = 'MA'
+                            if 'moving_average' in smoothed_results:
+                                band_powers = smoothed_results['moving_average']
+                except Exception as e:
+                    print(f"Error determining filter type: {e}")
+        
+        # Fallback to user-specified filter if CSV method failed
+        if band_powers is None:
+            if use_sg_filter:
+                if 'savitzky_golay' in smoothed_results:
+                    band_powers = smoothed_results['savitzky_golay']
+                    filter_type = "SG"
+                else:
+                    print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+                    return None
+            else:
+                if 'moving_average' in smoothed_results:
+                    band_powers = smoothed_results['moving_average']
+                    filter_type = "MA"
+                else:
+                    print("Error: Moving average filtered data not found in smoothed_results")
+                    return None
+        
+        # Extract Delta band data
+        if 'Delta' not in band_powers:
+            print(f"Error: Delta band not found in {filter_type} filtered data")
+            return None
+        
+        delta_power = band_powers['Delta']
+        behavior_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+        behavior_values = delta_power
+        
+        behavior_label = f'Delta Power (dB, {filter_type})'
+        behavior_title = f'Delta Power Over Time ({filter_type} filtered)'
+        
+        print(f"Delta power data loaded: {len(behavior_values)} points")
     
-    if not pixel_diff_files:
-        print(f"No pixel difference CSV found in {pixel_diff_path}")
-        return None
-    
-    # Load movement data
-    pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
-    try:
-        behavior_data = pd.read_csv(pixel_diff_file)
-        movement_time = behavior_data['time_sec'].values
-        movement_data = behavior_data[movement_column].values
-        
-        # Remove NaN values
-        valid_mask = ~np.isnan(movement_data)
-        movement_time = movement_time[valid_mask]
-        movement_data = movement_data[valid_mask]
-        
-        print(f"Movement data loaded: {len(movement_data)} points")
-        
-    except Exception as e:
-        print(f"Error loading behavioral data: {e}")
-        return None
-    if movement_data is not None:
-        # Apply movement capping (same as plot_pca_with_behavioral_features)
-        movement_min = np.nanmin(movement_data)
-        movement_max = np.nanmax(movement_data)
-        
-        print(f"Original movement range: {movement_min:.0f} to {movement_max:.0f}")
-        print(f"Applying upper limit cap at: {movement_upper_limit}")
-        
-        # Cap the movement values
-        movement_data_capped = np.clip(movement_data, movement_min, movement_upper_limit)
-        
-        # Update the movement_data for all subsequent processing
-        movement_data = movement_data_capped
-        
-        capped_max = np.nanmax(movement_data)
-        print(f"Capped movement range: {movement_min:.0f} to {capped_max:.0f}")
-
-    # Get movement values at PC time points for coloring
-    if len(movement_time) > 1:
-        interp_func = interp1d(movement_time, movement_data, 
-                            kind='linear', bounds_error=False, fill_value=np.nan)
-        movement_at_pc_times = interp_func(time_bins_pca)
-        
-        # Remove NaN values for coloring
-        valid_movement_mask = ~np.isnan(movement_at_pc_times)
-        
-        # Use capped values for normalization (5th to 95th percentile of capped data)
-        movement_norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
-                                vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
     else:
-        print("Error: Insufficient movement data for interpolation")
+        print(f"Error: Unknown behavior type '{behavior}'. Use 'movement' or 'delta'.")
+        return None    # Get behavior values at PC time points for coloring
+    if len(behavior_time) > 1:
+        interp_func = interp1d(behavior_time, behavior_values, 
+                            kind='linear', bounds_error=False, fill_value=np.nan)
+        behavior_at_pc_times = interp_func(time_bins_pca)        
+        # Remove NaN values for coloring
+        valid_behavior_mask = ~np.isnan(behavior_at_pc_times)
+        
+        # Use values for normalization (5th to 95th percentile of data)
+        behavior_norm = Normalize(vmin=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 5), 
+                                vmax=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 95))
+    else:
+        print("Error: Insufficient behavior data for interpolation")
         return None
     
     # Get delta power data from smoothed_results
@@ -3979,11 +4203,10 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
     # Assign each PC point to regions and collect results
     all_region_results = {}
     
-    for region_idx, region in enumerate(regions_to_analyze):
-        # Find points in this region
+    for region_idx, region in enumerate(regions_to_analyze):        # Find points in this region
         x_mask = (pc1 >= region['x_range'][0]) & (pc1 <= region['x_range'][1])
         y_mask = (pc2 >= region['y_range'][0]) & (pc2 <= region['y_range'][1])
-        region_mask = x_mask & y_mask & valid_movement_mask
+        region_mask = x_mask & y_mask & valid_behavior_mask
         
         if np.sum(region_mask) == 0:
             print(f"Warning: No valid points found in region '{region['name']}'")
@@ -3991,84 +4214,131 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         
         # Get data for this region
         region_times = time_bins_pca[region_mask]
-        region_movement_values = movement_at_pc_times[region_mask]
+        region_behavior_values = behavior_at_pc_times[region_mask]
         region_pc1 = pc1[region_mask]  
-        region_pc2 = pc2[region_mask]
-        
+        region_pc2 = pc2[region_mask]        
         print(f"Region '{region['name']}': {len(region_times)} points")
         
-        # Create color map based on movement intensity (like in the PCA plot)
+        # Create color map based on behavior intensity (like in the PCA plot)
         # Use the same colormap as plot_pca_with_behavioral_features
-        norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
-                        vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
-        cmap = cm.get_cmap('coolwarm')  # Blue for low movement, red for high movement
-        region_colors = cmap(norm(region_movement_values))
-        
+        norm = Normalize(vmin=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 5), 
+                        vmax=np.nanpercentile(behavior_at_pc_times[valid_behavior_mask], 95))
+        cmap = cm.get_cmap('coolwarm')  # Blue for low behavior, red for high behavior
+        region_colors = cmap(norm(region_behavior_values))        
         # Create the plot for this region
         fig, axes = plt.subplots(3, 1, figsize=(16, 12))
         fig.suptitle(f'{subject}: {region["name"]} - PC Region Analysis Over Time', fontsize=16)
         
-        # Top plot: Movement over time
+        # Top plot: Behavior over time based on behavior parameter
         ax1 = axes[0]
-        ax1.plot(movement_time, movement_data, 'k-', linewidth=0.5, alpha=0.3, label='All Movement')
+        ax1.plot(behavior_time, behavior_values, 'k-', linewidth=0.5, alpha=0.3, label=f'All {behavior.title()}')
         
         # Add sleep periods as background
         for _, row in neural_sleep_df.iterrows():
             ax1.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
                        color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
         
-        # Get movement values at region times (interpolate)
-        if len(movement_time) > 1:
-            movement_at_region_times = interp_func(region_times)
-            valid_interp = ~np.isnan(movement_at_region_times)
+        # Get behavior values at region times (interpolate)
+        if len(behavior_time) > 1:
+            behavior_at_region_times = interp_func(region_times)
+            valid_interp = ~np.isnan(behavior_at_region_times)
             
-            # Plot region points with movement-intensity colors
-            scatter = ax1.scatter(region_times[valid_interp], movement_at_region_times[valid_interp], 
-                                c=region_movement_values[valid_interp], cmap='coolwarm', 
+            # Plot region points with behavior-intensity colors
+            scatter = ax1.scatter(region_times[valid_interp], behavior_at_region_times[valid_interp], 
+                                c=region_behavior_values[valid_interp], cmap='coolwarm', 
                                 s=20, alpha=0.8, norm=norm, zorder=5, 
                                 label=f"{region['name']} (n={np.sum(valid_interp)})")
         
-        ax1.set_ylabel('Movement (pixels)')
-        ax1.set_title(f'Movement Over Time - {region["name"]}')
+        ax1.set_ylabel(behavior_label)
+        ax1.set_title(behavior_title + f' - {region["name"]}')
         ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
+        ax1.grid(True, alpha=0.3)        
         # Middle plot: Delta power over time
         ax2 = axes[1]
-        ax2.plot(delta_time, delta_power, 'purple', linewidth=0.8, alpha=0.3, label=f'All Delta Power ({filter_type})')
         
-        # Add sleep periods
-        for _, row in neural_sleep_df.iterrows():
-            ax2.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
-                       color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+        # Get delta power data from smoothed_results for delta plot
+        delta_band_powers = None
+        delta_filter_type = None
         
-        # Get delta power values at region times (interpolate)
-        if len(delta_time) > 1:
-            interp_func_delta = interp1d(delta_time, delta_power, 
-                                       kind='linear', bounds_error=False, fill_value=np.nan)
-            delta_at_region_times = interp_func_delta(region_times)
-            valid_interp_delta = ~np.isnan(delta_at_region_times)
+        # First check if smoothed_results is provided directly
+        if smoothed_results is not None:
+            # Try to determine which filter was used in save_sleep_periods_to_csv
+            if output_folder:
+                sleep_times_csv = os.path.join(output_folder, "sleep_times.csv")
+                if os.path.exists(sleep_times_csv):
+                    try:
+                        sleep_df = pd.read_csv(sleep_times_csv)
+                        if 'filter' in sleep_df.columns and len(sleep_df) > 0:
+                            filter_name = sleep_df['filter'].iloc[0]
+                            if 'Savitzky-Golay' in filter_name:
+                                delta_filter_type = 'SG'
+                                if 'savitzky_golay' in smoothed_results:
+                                    delta_band_powers = smoothed_results['savitzky_golay']
+                            elif 'MovingAverage' in filter_name or 'Moving Average' in filter_name:
+                                delta_filter_type = 'MA'
+                                if 'moving_average' in smoothed_results:
+                                    delta_band_powers = smoothed_results['moving_average']
+                    except Exception as e:
+                        print(f"Error determining filter type: {e}")
             
-            # Plot region points with movement-intensity colors
-            scatter2 = ax2.scatter(region_times[valid_interp_delta], delta_at_region_times[valid_interp_delta], 
-                                 c=region_movement_values[valid_interp_delta], cmap='coolwarm', 
-                                 s=20, alpha=0.8, norm=norm, zorder=5,
-                                 label=f"{region['name']} (n={np.sum(valid_interp_delta)})")
+            # Fallback to user-specified filter if CSV method failed
+            if delta_band_powers is None:
+                if use_sg_filter:
+                    if 'savitzky_golay' in smoothed_results:
+                        delta_band_powers = smoothed_results['savitzky_golay']
+                        delta_filter_type = "SG"
+                    else:
+                        print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+                else:
+                    if 'moving_average' in smoothed_results:
+                        delta_band_powers = smoothed_results['moving_average']
+                        delta_filter_type = "MA"
+                    else:
+                        print("Error: Moving average filtered data not found in smoothed_results")
         
-        ax2.set_ylabel('Delta Power (dB)')
-        ax2.set_title(f'Delta Power Over Time ({filter_type} filtered) - {region["name"]}')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        # Extract Delta band data from the delta_band_powers dictionary
+        if delta_band_powers is not None and 'Delta' in delta_band_powers:
+            delta_power = delta_band_powers['Delta']
+            delta_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+            
+            ax2.plot(delta_time, delta_power, 'purple', linewidth=0.8, alpha=0.3, label=f'All Delta Power ({delta_filter_type})')
+            
+            # Add sleep periods
+            for _, row in neural_sleep_df.iterrows():
+                ax2.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
+                           color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+            
+            # Get delta power values at region times (interpolate)
+            if len(delta_time) > 1:
+                interp_func_delta = interp1d(delta_time, delta_power, 
+                                           kind='linear', bounds_error=False, fill_value=np.nan)
+                delta_at_region_times = interp_func_delta(region_times)
+                valid_interp_delta = ~np.isnan(delta_at_region_times)
+                
+                # Plot region points with behavior-intensity colors
+                scatter2 = ax2.scatter(region_times[valid_interp_delta], delta_at_region_times[valid_interp_delta], 
+                                     c=region_behavior_values[valid_interp_delta], cmap='coolwarm', 
+                                     s=20, alpha=0.8, norm=norm, zorder=5,
+                                     label=f"{region['name']} (n={np.sum(valid_interp_delta)})")
+            
+            ax2.set_ylabel('Delta Power (dB)')
+            ax2.set_title(f'Delta Power Over Time ({delta_filter_type} filtered) - {region["name"]}')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+        else:
+            ax2.text(0.5, 0.5, 'Delta power data not available', ha='center', va='center', transform=ax2.transAxes)
+            ax2.set_title('Delta Power Over Time - {region["name"]}')
+            ax2.set_ylabel('Delta Power (dB)')
+            ax2.grid(True, alpha=0.3)
         
         # Bottom plot: PC space showing this region
         ax3 = axes[2]
         
         # Plot all points in light gray
-        ax3.scatter(pc1, pc2, c='lightgray', s=5, alpha=0.2, label='All Data')
-        
-        # Plot this region's points with movement-intensity colors
+        ax3.scatter(pc1, pc2, c='lightgray', s=5, alpha=0.2, label='All Data')        
+        # Plot this region's points with behavior-intensity colors
         scatter3 = ax3.scatter(region_pc1, region_pc2, 
-                             c=region_movement_values, cmap='coolwarm', 
+                             c=region_behavior_values, cmap='coolwarm', 
                              s=25, alpha=0.8, norm=norm, 
                              label=f"{region['name']} (n={len(region_pc1)})")
         
@@ -4087,14 +4357,16 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         ax3.axhline(0, color='gray', linestyle='--', linewidth=0.7)
         ax3.axvline(0, color='gray', linestyle='--', linewidth=0.7)
         
-        # Add colorbar for movement intensity
-        plt.colorbar(scatter3, ax=ax3, label='Movement Intensity (pixels)')
+        # Add colorbar for behavior intensity
+        plt.colorbar(scatter3, ax=ax3, label=behavior_label)
         
-        plt.tight_layout()
-        
+        plt.tight_layout()        
         # Save the plot for this region
         safe_region_name = region['name'].replace(' ', '_').replace('/', '_')
-        plot_path = os.path.join(output_folder, f'{subject}_pc_region_{safe_region_name}_analysis_{filter_type}.png')
+        if behavior == 'delta':
+            plot_path = os.path.join(output_folder, f'{subject}_pc_region_{safe_region_name}_analysis_delta.png')
+        else:
+            plot_path = os.path.join(output_folder, f'{subject}_pc_region_{safe_region_name}_analysis_movement.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.show()
         
@@ -4104,7 +4376,7 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         all_region_results[region['name']] = {
             'region_mask': region_mask,
             'time_points': region_times,
-            'movement_values': region_movement_values,
+            'behavior_values': region_behavior_values,
             'pc1_values': region_pc1,
             'pc2_values': region_pc2,
             'n_points': len(region_times)
@@ -4112,8 +4384,7 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         
         # Print summary statistics for this region
         print(f"\n=== {region['name']} Analysis Summary ===")
-        
-        # Check sleep/wake distribution
+          # Check sleep/wake distribution
         sleep_count = 0
         wake_count = 0
         
@@ -4133,23 +4404,24 @@ def analyze_pc_regions_over_time(pca_results, dlc_folder, smoothed_results, neur
         print(f"  Sleep points: {sleep_count} ({sleep_count/len(region_times)*100:.1f}%)")
         print(f"  Wake points: {wake_count} ({wake_count/len(region_times)*100:.1f}%)")
         print(f"  Time range: {region_times.min():.1f}s - {region_times.max():.1f}s")
-        print(f"  Movement range: {region_movement_values.min():.1f} - {region_movement_values.max():.1f} pixels")
+        print(f"  {behavior.title()} range: {region_behavior_values.min():.1f} - {region_behavior_values.max():.1f}")
     
     return {
         'region_results': all_region_results,
         'pc1': pc1,
         'pc2': pc2,
         'time_bins': time_bins_pca,
-        'movement_at_pc_times': movement_at_pc_times,
+        'behavior_at_pc_times': behavior_at_pc_times,
         'regions_analyzed': regions_to_analyze,
-        'filter_used': filter_type
+        'behavior_type': behavior
     }
+
 def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
                                    subject, output_folder, time_regions_to_analyze, 
                                    movement_column='smoothed_difference', components_to_plot=(0, 1),
                                    use_sg_filter=True, behavior='movement'):
     """
-    Analyze specific time regions by highlighting them in PC space with behavioral coloring.
+    Analyze specific time regions by highlighting them in PC space with behavioral context.
     Creates three-panel plots: behavior over time, PC space with movement coloring, and PC space with time gradient coloring.
     
     Parameters:
@@ -4353,18 +4625,20 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
         fig = plt.figure(figsize=(20, 12))
         gs = plt.GridSpec(2, 2, height_ratios=[1, 1], width_ratios=[1, 1])
         
+        # Set overall title for the figure (bigger and bold)
+        fig.suptitle(region_name, fontsize=20, fontweight='bold', y=0.98)
+        
         # Top plot (spans both columns): Behavior over time with highlighted region
         ax1 = fig.add_subplot(gs[0, :])
-        ax1.plot(behavior_time, behavior_values, 'k-', linewidth=0.8, alpha=0.7, label=behavior_title.split(' - ')[0])
+        ax1.plot(behavior_time, behavior_values, 'k-', linewidth=0.8, alpha=0.7)
         
         # Add sleep periods as background
         for _, row in neural_sleep_df.iterrows():
             ax1.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
-                       color='blue', alpha=0.2, label='Sleep' if _ == 0 else "")
+                       color='blue', alpha=0.2)
         
         # Highlight the selected time region
-        ax1.axvspan(start_time, end_time, color='yellow', alpha=0.3, 
-                   label=f'Selected Region', zorder=1)
+        ax1.axvspan(start_time, end_time, color='yellow', alpha=0.3, zorder=1)
         
         # Get behavior values at region times (interpolate)
         if len(behavior_time) > 1:
@@ -4378,10 +4652,9 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
                                      s=30, alpha=0.9, norm=behavior_norm, zorder=5, 
                                      edgecolors='black', linewidths=0.5)
         
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel(behavior_label)
-        ax1.set_title(f'{behavior_title} - {region_name} Highlighted ({start_time}s - {end_time}s)')
-        ax1.legend()
+        ax1.set_xlabel('Time (s)', fontsize=14)
+        ax1.set_ylabel(behavior_label, fontsize=14)
+        # Remove subplot title since we have the main title now
         ax1.grid(True, alpha=0.3)
         ax1.set_xlim(behavior_time[0], behavior_time[-1])
         
@@ -4389,26 +4662,24 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
         ax2 = fig.add_subplot(gs[1, 0])
         
         # Plot all points in light gray first
-        ax2.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3, label='All Other Times')
+        ax2.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3)
         
         # Plot the time region's points with behavior-intensity colors
         if len(region_pc1) > 0:
             scatter2 = ax2.scatter(region_pc1, region_pc2, 
                                  c=region_behavior_values, cmap=color_map, 
                                  s=25, alpha=0.8, norm=behavior_norm, 
-                                 edgecolors='black', linewidths=0.3,
-                                 label=f"{region_name} (n={len(region_pc1)})")
+                                 edgecolors='black', linewidths=0.3)
             
             # Add colorbar for behavior intensity
             cbar2 = plt.colorbar(scatter2, ax=ax2, label=behavior_label, shrink=0.8)
         
-        ax2.set_xlabel(f'PC{comp1_idx+1}')
-        ax2.set_ylabel(f'PC{comp2_idx+1}')
+        ax2.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+        ax2.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
         if behavior == 'movement':
-            ax2.set_title(f'PC Space - Movement Coloring')
+            ax2.set_title('PC Space (Movement)', fontsize=14, fontweight='bold')
         else:
-            ax2.set_title(f'PC Space - Delta Power Coloring')
-        ax2.legend()
+            ax2.set_title('PC Space (Delta Power)', fontsize=14, fontweight='bold')
         ax2.grid(True, alpha=0.3)
         ax2.axhline(0, color='gray', linestyle='--', linewidth=0.7)
         ax2.axvline(0, color='gray', linestyle='--', linewidth=0.7)
@@ -4417,15 +4688,14 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
         ax3 = fig.add_subplot(gs[1, 1])
         
         # Plot all points in light gray first
-        ax3.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3, label='All Other Times')
+        ax3.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3)
         
         # Plot the time region's points with time gradient colors
         if len(region_pc1) > 0:
             scatter3 = ax3.scatter(region_pc1, region_pc2, 
                                  c=region_times, cmap=time_cmap, 
                                  s=25, alpha=0.8, norm=time_norm,
-                                 edgecolors='black', linewidths=0.3,
-                                 label=f"{region_name} (n={len(region_pc1)})")
+                                 edgecolors='black', linewidths=0.3)
             
             # Add colorbar for time gradient
             cbar3 = plt.colorbar(scatter3, ax=ax3, label='Time (s)', shrink=0.8)
@@ -4436,21 +4706,16 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
                 end_idx = np.argmax(region_times)
                 
                 ax3.plot(region_pc1[start_idx], region_pc2[start_idx], 'go', 
-                        markersize=8, label='Start', zorder=11)
+                        markersize=8, zorder=11)
                 ax3.plot(region_pc1[end_idx], region_pc2[end_idx], 'ro', 
-                        markersize=8, label='End', zorder=11)
+                        markersize=8, zorder=11)
         
-        ax3.set_xlabel(f'PC{comp1_idx+1}')
-        ax3.set_ylabel(f'PC{comp2_idx+1}')
-        ax3.set_title(f'PC Space - Time Gradient Coloring')
-        ax3.legend()
+        ax3.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+        ax3.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+        ax3.set_title('PC Space (Chronologically)', fontsize=14, fontweight='bold')
         ax3.grid(True, alpha=0.3)
         ax3.axhline(0, color='gray', linestyle='--', linewidth=0.7)
         ax3.axvline(0, color='gray', linestyle='--', linewidth=0.7)
-        
-        # Overall title
-        behavior_type_title = "Movement" if behavior == 'movement' else "Delta Power"
-        fig.suptitle(f'{subject}: Time Region Analysis ({behavior_type_title}) - {region_name}', fontsize=18, y=0.95)
         
         plt.tight_layout()
         
@@ -4517,6 +4782,8 @@ def analyze_time_regions_in_pc_space(pca_results, dlc_folder, smoothed_results, 
         'time_regions_analyzed': time_regions_to_analyze,
         'behavior_type': behavior
     }
+
+
 
 def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
                                             subject, output_folder, time_windows_to_analyze, 
