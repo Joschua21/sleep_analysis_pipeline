@@ -61,8 +61,8 @@ def subset_video(ffmpeg_path, input_video_path, output_directory, subset_start_p
 
 if __name__ == "__main__":
     ffmpeg_exec = 'ffmpeg'
-    mj2_file = r"\\zaru.cortexlab.net\Subjects\AV049\2023-08-08\2\2023-08-08_2_AV049_topCam.mj2"
-    output_dir = r"C:\Users\Experiment\Projects\video_conversions\subjects\AV049\2023-08-08_2"
+    mj2_file = r"\\zaru.cortexlab.net\Subjects\AV049\2023-07-27\2\2023-07-27_2_AV049_topCam.mj2"
+    output_dir = r"C:\Users\Experiment\Projects\video_conversions\subjects\AV049\2023-07-27_2"
     # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
