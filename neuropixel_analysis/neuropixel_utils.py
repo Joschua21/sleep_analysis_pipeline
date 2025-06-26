@@ -1618,9 +1618,7 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
             # Remove the in_range check to ensure all bouts are included
             sleep_starts.append(bout['start_timestamp_s'])
             sleep_ends.append(bout['end_bin_time'])
-        for _, bout in sleep_bouts.iterrows():
-            ax1.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
-            color='lightblue', alpha=0.3, ec='none')
+
                 
         # Add binary sleep/wake indicator at the top of the plot
         # Calculate appropriate height for the indicator line (just above the top of the plot)
