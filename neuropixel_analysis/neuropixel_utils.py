@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 from pinkrigs_tools.dataset.query import load_data, queryCSV
 import os
 from datetime import datetime
@@ -687,8 +688,8 @@ def analyze_sleep_wake_activity(results, output_dir=None, save_plots=False, show
 def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=False, bin_size_s=120, 
                                        state_threshold=0.9, max_iterations=1000):
     """
-    Combined analysis of cluster state distribution and neuronal stability using pooled data from all probes.
-    Creates both the state distribution plot and stability scatter plots in a single analysis.
+    Analysis of neuronal stability using pooled data from all probes.
+    Creates stability scatter plots comparing firing rate consistency and modulation across recording halves.
     
     Parameters:
     -----------
@@ -708,7 +709,7 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
     Returns:
     --------
     dict
-        Dictionary containing both state distribution and stability metrics for merged probes
+        Dictionary containing stability metrics for merged probes
     """
     # Convert threshold from percentage to fraction if needed
     if state_threshold > 1:
@@ -830,42 +831,18 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
     large_bin_times = np.array(large_bin_times)
     large_bin_states = np.array(large_bin_states)
     
-    # === STATE DISTRIBUTION ANALYSIS ===
-    # Collect data for plotting
-    plot_data = []
-    for i, cluster_id in enumerate(all_cluster_ids):
-        sleep_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Sleep']]
-        wake_rates = large_bin_firing_rates[i, [idx for idx, state in enumerate(large_bin_states) if state == 'Wake']]
-        
-        # Calculate average normalized firing rate across bins for each state
-        if len(sleep_rates) > 0:
-            sleep_avg_rate = np.mean(sleep_rates)
-            plot_data.append({
-                'cluster_id': cluster_id,
-                'state': 'Sleep',
-                'firing_rate': sleep_avg_rate
-            })
-            
-        if len(wake_rates) > 0:
-            wake_avg_rate = np.mean(wake_rates)
-            plot_data.append({
-                'cluster_id': cluster_id,
-                'state': 'Wake',
-                'firing_rate': wake_avg_rate
-            })
-    
-    # Convert to DataFrame for seaborn
-    df_plot = pd.DataFrame(plot_data)
-    
     # === STABILITY ANALYSIS ===
     # Identify recording midpoint
     midpoint_time = (time_bins[0] + time_bins[-1]) / 2
     
-    # Create bin groups
-    first_half_sleep_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Sleep'))[0]
-    first_half_wake_bins = np.where((large_bin_times < midpoint_time) & (large_bin_states == 'Wake'))[0]
-    second_half_sleep_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Sleep'))[0]
-    second_half_wake_bins = np.where((large_bin_times >= midpoint_time) & (large_bin_states == 'Wake'))[0]
+    # Create bin groups for first/second half analysis
+    first_half_mask = large_bin_times < midpoint_time
+    second_half_mask = large_bin_times >= midpoint_time
+    
+    first_half_sleep_bins = np.where(first_half_mask & (large_bin_states == 'Sleep'))[0]
+    first_half_wake_bins = np.where(first_half_mask & (large_bin_states == 'Wake'))[0]
+    second_half_sleep_bins = np.where(second_half_mask & (large_bin_states == 'Sleep'))[0]
+    second_half_wake_bins = np.where(second_half_mask & (large_bin_states == 'Wake'))[0]
     
     # Print bin distribution
     print(f"\nBin distribution for merged probes:")
@@ -944,6 +921,12 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
     c2_sleep_rates = np.zeros(normalized_counts.shape[0])
     c2_wake_rates = np.zeros(normalized_counts.shape[0])
     
+    # Calculate rates for first and second halves (for the new plot)
+    first_half_sleep_rates = np.zeros(normalized_counts.shape[0])
+    first_half_wake_rates = np.zeros(normalized_counts.shape[0])
+    second_half_sleep_rates = np.zeros(normalized_counts.shape[0])
+    second_half_wake_rates = np.zeros(normalized_counts.shape[0])
+    
     for i in range(normalized_counts.shape[0]):
         # Average normalized rates in each category
         c1_rates[i] = np.mean(large_bin_firing_rates[i, c1_mask]) if np.sum(c1_mask) > 0 else np.nan
@@ -962,66 +945,27 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         
         c2_sleep_rates[i] = np.mean(large_bin_firing_rates[i, c2_sleep_mask]) if np.sum(c2_sleep_mask) > 0 else np.nan
         c2_wake_rates[i] = np.mean(large_bin_firing_rates[i, c2_wake_mask]) if np.sum(c2_wake_mask) > 0 else np.nan
+        
+        # First/second half rates (for new plot)
+        first_half_sleep_rates[i] = np.mean(large_bin_firing_rates[i, first_half_sleep_bins]) if len(first_half_sleep_bins) > 0 else np.nan
+        first_half_wake_rates[i] = np.mean(large_bin_firing_rates[i, first_half_wake_bins]) if len(first_half_wake_bins) > 0 else np.nan
+        second_half_sleep_rates[i] = np.mean(large_bin_firing_rates[i, second_half_sleep_bins]) if len(second_half_sleep_bins) > 0 else np.nan
+        second_half_wake_rates[i] = np.mean(large_bin_firing_rates[i, second_half_wake_bins]) if len(second_half_wake_bins) > 0 else np.nan
     
     # Calculate modulation
     c1_modulation = c1_wake_rates - c1_sleep_rates
     c2_modulation = c2_wake_rates - c2_sleep_rates
     
-    # === COMBINED PLOTTING ===
-    # Create figure with 3 subplots: swarm plot + 2 stability plots
-    fig, axes = plt.subplots(1, 3, figsize=(20, 7))
+    # Calculate modulation for first and second halves
+    first_half_modulation = first_half_wake_rates - first_half_sleep_rates
+    second_half_modulation = second_half_wake_rates - second_half_sleep_rates
     
-    # === PLOT 1: STATE DISTRIBUTION SWARM PLOT ===
-    if not df_plot.empty:
-        # Create swarm plot
-        sns.swarmplot(data=df_plot, x='state', y='firing_rate', color='gray', alpha=0.7, size=5, ax=axes[0])
-        
-        # Add box plot over swarm plot
-        sns.boxplot(data=df_plot, x='state', y='firing_rate', color='white', fliersize=0, width=0.5, 
-                   boxprops={"facecolor": (.9, .9, .9, 0.5), "edgecolor": "black"}, ax=axes[0])
-        
-        axes[0].set_title(f'State-Dependent Firing Rates')
-            
-    else:
-        print("No data available for state distribution plot.")
-
-    axes[0].set_ylabel('Normalized Firing Rate')
-    axes[0].grid(True, axis='y', alpha=0.3)
+    # === PLOTTING ===
+    # Create two separate figures
     
-    # === PLOT 2: STABILITY - FIRING RATE CONSISTENCY ===
-    valid_mask = ~np.isnan(c1_rates) & ~np.isnan(c2_rates)
+    # === FIGURE 1: STABILITY - MODULATION CONSISTENCY (C1 vs C2) ===
+    fig1, ax1 = plt.subplots(1, 1, figsize=(10, 8))
     
-    if np.sum(valid_mask) > 1:
-        # Get max value for axis scaling
-        max_val = max(np.nanmax(c1_rates), np.nanmax(c2_rates))
-        
-        # Create scatter plot
-        axes[1].scatter(c1_rates[valid_mask], c2_rates[valid_mask], alpha=0.7)
-        
-        # Add identity line
-        axes[1].plot([0, max_val*1.1], [0, max_val*1.1], 'k--', alpha=0.7)
-        
-        # Add regression line
-        slope, intercept, r_value, p_value_stability, std_err = stats.linregress(
-            c1_rates[valid_mask], c2_rates[valid_mask]
-        )
-        
-        x_vals = np.array([0, max_val*1.1])
-        axes[1].plot(x_vals, intercept + slope * x_vals, 'r-', alpha=0.7)
-
-
-        
-        axes[1].set_xlabel('C1 - Average Firing Rate')
-        axes[1].set_ylabel('C2 - Average Firing Rate')
-        axes[1].set_title('Neuronal Stability')
-        axes[1].legend(fontsize=9)
-        axes[1].grid(True, alpha=0.3)
-    else:
-        axes[1].text(0.5, 0.5, 'Insufficient data for\nstability analysis',
-                   ha='center', va='center', transform=axes[1].transAxes)
-        axes[1].set_title('Neuronal Stability\nFiring Rate Consistency')
-    
-    # === PLOT 3: STABILITY - MODULATION CONSISTENCY ===
     valid_mod_mask = (~np.isnan(c1_modulation) & ~np.isnan(c2_modulation))
     
     if np.sum(valid_mod_mask) > 1:
@@ -1032,10 +976,11 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         ) * 1.1
         
         # Create scatter plot
-        axes[2].scatter(c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask], alpha=0.7)
+        ax1.scatter(c1_modulation[valid_mod_mask], c2_modulation[valid_mod_mask], 
+                   alpha=0.7, color='blue', s=50)
         
         # Add identity line
-        axes[2].plot([-max_mod, max_mod], [-max_mod, max_mod], 'k--', alpha=0.7)
+        ax1.plot([-max_mod, max_mod], [-max_mod, max_mod], 'k--', alpha=0.7)
         
         # Add regression line
         mod_slope, mod_intercept, mod_r, mod_p, mod_err = stats.linregress(
@@ -1043,57 +988,120 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
         )
         
         x_mod_vals = np.array([-max_mod, max_mod])
-        axes[2].plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7)
-
+        ax1.plot(x_mod_vals, mod_intercept + mod_slope * x_mod_vals, 'r-', alpha=0.7, linewidth=2,
+                label=f'r² = {mod_r**2:.2f}')
         
         # Add quadrant lines
-        axes[2].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-        axes[2].axvline(x=0, color='gray', linestyle='-', alpha=0.3)
+        ax1.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        ax1.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
         
-        # Count points in each quadrant
-        q1 = np.sum((c1_modulation > 0) & (c2_modulation > 0) & valid_mod_mask)
-        q2 = np.sum((c1_modulation < 0) & (c2_modulation > 0) & valid_mod_mask)
-        q3 = np.sum((c1_modulation < 0) & (c2_modulation < 0) & valid_mod_mask)
-        q4 = np.sum((c1_modulation > 0) & (c2_modulation < 0) & valid_mod_mask)
-        
-        axes[2].set_xlabel('C1 - Wake-Sleep Modulation')
-        axes[2].set_ylabel('C2 - Wake-Sleep Modulation')
-        axes[2].set_title('Sleep-Wake Modulation')
-        axes[2].legend(fontsize=9)
-        axes[2].grid(True, alpha=0.3)
+        ax1.set_xlabel('C1 - Sleep-Wake FR', fontsize=28)
+        ax1.set_ylabel('C2 - Sleep-Wake FR', fontsize=28)
+        ax1.tick_params(axis='x', labelsize=20)
+        ax1.tick_params(axis='y', labelsize=20)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.legend(loc='upper left', fontsize=24)
         
         # Set equal x and y limits
-        axes[2].set_xlim(-max_mod, max_mod)
-        axes[2].set_ylim(-max_mod, max_mod)
+        ax1.set_xlim(-max_mod, max_mod)
+        ax1.set_ylim(-max_mod, max_mod)
+        ax1.xaxis.set_major_locator(MaxNLocator(nbins=3)) 
+        ax1.yaxis.set_major_locator(MaxNLocator(nbins=3))
         
     else:
-        axes[2].text(0.5, 0.5, 'Insufficient data for\nmodulation analysis',
-                   ha='center', va='center', transform=axes[2].transAxes)
-        axes[2].set_title('Sleep-Wake Modulation\nConsistency')
+        ax1.text(0.5, 0.5, 'Insufficient data for\nmodulation analysis',
+               ha='center', va='center', transform=ax1.transAxes)
+        ax1.set_xlabel('C1 - Sleep-Wake Modulation', fontsize=24)
+        ax1.set_ylabel('C2 - Sleep-Wake Modulation', fontsize=24)
+        ax1.tick_params(axis='x', labelsize=20)
+        ax1.tick_params(axis='y', labelsize=20)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
     
     plt.tight_layout()
     
-    # Save plot if requested
+    # Save first plot if requested
     if save_plots and output_dir:
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"combined_state_stability_analysis_{timestamp}.png"
-        filepath = os.path.join(output_dir, filename)
-        plt.savefig(filepath, dpi=300, bbox_inches='tight')
-        print(f"Saved combined analysis plot to: {filepath}")
+        filename1 = f"c1_c2_modulation_stability_{timestamp}.png"
+        filepath1 = os.path.join(output_dir, filename1)
+        plt.savefig(filepath1, dpi=300, bbox_inches='tight')
+        print(f"Saved C1 vs C2 modulation plot to: {filepath1}")
     
     plt.show()
     
-    # Store and return combined results
-    combined_results = {
+    # === FIGURE 2: FIRST vs SECOND HALF MODULATION ===
+    fig2, ax2 = plt.subplots(1, 1, figsize=(10, 8))
+    
+    valid_half_mask = (~np.isnan(first_half_modulation) & ~np.isnan(second_half_modulation))
+    
+    if np.sum(valid_half_mask) > 1:
+        # Get max absolute value for axis scaling
+        max_half_mod = max(
+            np.nanmax(np.abs(first_half_modulation)), 
+            np.nanmax(np.abs(second_half_modulation))
+        ) * 1.1
+        
+        # Create scatter plot
+        ax2.scatter(first_half_modulation[valid_half_mask], second_half_modulation[valid_half_mask], 
+                   alpha=0.7, color='blue', s=50)
+        
+        # Add identity line
+        ax2.plot([-max_half_mod, max_half_mod], [-max_half_mod, max_half_mod], 'k--', alpha=0.7)
+        
+        # Add regression line
+        half_slope, half_intercept, half_r, half_p, half_err = stats.linregress(
+            first_half_modulation[valid_half_mask], second_half_modulation[valid_half_mask]
+        )
+        
+        x_half_vals = np.array([-max_half_mod, max_half_mod])
+        ax2.plot(x_half_vals, half_intercept + half_slope * x_half_vals, 'r-', alpha=0.7, linewidth=2,
+                label=f'r² = {half_r**2:.2f}')
+        
+        # Add quadrant lines
+        ax2.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        ax2.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
+        
+        ax2.set_xlabel('First Half Sleep-Wake Modulation', fontsize=24)
+        ax2.set_ylabel('Second Half Sleep-Wake Modulation', fontsize=24)
+        ax2.tick_params(axis='x', labelsize=20)
+        ax2.tick_params(axis='y', labelsize=20)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.legend(loc='upper left', fontsize=24)
+        
+        # Set equal x and y limits
+        ax2.set_xlim(-max_half_mod, max_half_mod)
+        ax2.set_ylim(-max_half_mod, max_half_mod)
+        
+    else:
+        ax2.text(0.5, 0.5, 'Insufficient data for\nhalf modulation analysis',
+               ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_xlabel('First Half Sleep-Wake Modulation', fontsize=24)
+        ax2.set_ylabel('Second Half Sleep-Wake Modulation', fontsize=24)
+        ax2.tick_params(axis='x', labelsize=20)
+        ax2.tick_params(axis='y', labelsize=20)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+    
+    plt.tight_layout()
+    
+    # Save second plot if requested
+    if save_plots and output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename2 = f"first_second_half_modulation_{timestamp}.png"
+        filepath2 = os.path.join(output_dir, filename2)
+        plt.savefig(filepath2, dpi=300, bbox_inches='tight')
+        print(f"Saved first vs second half modulation plot to: {filepath2}")
+    
+    plt.show()
+    
+    # Store and return results
+    stability_results = {
         'merged': {
-            # State distribution results
-            'cluster_ids': all_cluster_ids,
-            'large_bin_states': large_bin_states,
-            'large_bin_firing_rates': large_bin_firing_rates,
-            'large_bin_centers': large_bin_times,
-            'plot_data': df_plot,
-            
             # Stability results
             'c1_rates': c1_rates,
             'c2_rates': c2_rates,
@@ -1104,14 +1112,23 @@ def analyze_cluster_state_and_stability(results, output_dir=None, save_plots=Fal
             'c1_modulation': c1_modulation,
             'c2_modulation': c2_modulation,
             
+            # First/second half results
+            'first_half_sleep_rates': first_half_sleep_rates,
+            'first_half_wake_rates': first_half_wake_rates,
+            'second_half_sleep_rates': second_half_sleep_rates,
+            'second_half_wake_rates': second_half_wake_rates,
+            'first_half_modulation': first_half_modulation,
+            'second_half_modulation': second_half_modulation,
+            
             # Analysis parameters
             'bin_size_s': bin_size_s,
             'state_threshold': state_threshold,
-            'num_large_bins': num_large_bins
+            'num_large_bins': num_large_bins,
+            'cluster_ids': all_cluster_ids
         }
     }
     
-    return combined_results
+    return stability_results
 
 
 def analyze_power_spectrum(results, output_dir=None, save_plots=False, 
@@ -1429,9 +1446,8 @@ def analyze_power_spectrum(results, output_dir=None, save_plots=False,
     
     return spectrum_results
 
-
 def combined_visualization(results, freq_results, np_results, spectrum_results, 
-                          dlc_folder, output_dir=None, save_plots=False, smoothed_results=None, pca_results=None):
+                          dlc_folder, output_dir=None, save_plots=False, smoothed_results=None, pca_results=None, show_sleep_in_delta=False):
     """
     Create a combined visualization of sleep-wake activity, power spectrum analysis,
     and behavioral data using pre-computed results.
@@ -1452,6 +1468,8 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         Directory to save plots to (default: None)
     save_plots : bool, optional
         Whether to save plots (default: False)
+    show_sleep_in_delta : bool, optional
+        Whether to show sleep periods in the delta power plot (default: False)
         
     Returns:
     --------
@@ -1515,11 +1533,11 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
             print(f"Error loading behavioral data: {e}")
             behavior_data = None
     
-    # Create figure with 5 subplots with custom height ratios (added behavior plot)
-    fig = plt.figure(figsize=(16, 24))
-    gs = gridspec.GridSpec(6, 1, height_ratios=[1, 3, 1, 1, 3, 1.5], figure=fig)
+    # Create figure with 5 subplots with custom height ratios (removed PC1 plot)
+    fig = plt.figure(figsize=(16, 20))
+    gs = gridspec.GridSpec(5, 1, height_ratios=[1, 3, 1, 3, 1.5], figure=fig)
     
-    # ================ PLOT 1: BEHAVIOR DATA ================
+    # ================ PLOT 1: BEHAVIOR DATA (NO SLEEP PERIODS) ================
     ax_behav = fig.add_subplot(gs[0])
     
     if behavior_data is not None:
@@ -1527,31 +1545,37 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         time_sec = behavior_data['time_sec'].values
         smoothed_diff = behavior_data['smoothed_difference'].values
         
+        # Convert to thousands for better axis labels
+        smoothed_diff_scaled = smoothed_diff / 1000
+        
         # Handle missing values - create separate segments to plot
-        valid_mask = ~np.isnan(smoothed_diff)
+        valid_mask = ~np.isnan(smoothed_diff_scaled)
         gaps = np.where(np.diff(valid_mask.astype(int)) != 0)[0] + 1
         segments = np.split(np.arange(len(valid_mask)), gaps)
         
-        # Plot each continuous segment separately
+        # Plot each continuous segment separately (NO SLEEP PERIODS)
         for segment in segments:
             if len(segment) > 0 and valid_mask[segment[0]]:  # Only plot valid segments
-                ax_behav.plot(time_sec[segment], smoothed_diff[segment], 'k-', linewidth=1)
+                ax_behav.plot(time_sec[segment], smoothed_diff_scaled[segment], 'k-', linewidth=1)
         
-        # Add light colored vertical spans for sleep periods
-        for _, bout in sleep_bouts.iterrows():
-            ax_behav.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
-                        color='lightblue', alpha=0.3, ec='none')
-        
-        ax_behav.set_title('Motion Activity (Pixel Difference)')
-        ax_behav.set_ylabel('Smoothed\nDifference')
+        # Remove title, grid, and top/right spines
+        ax_behav.set_ylabel('Pixel\nDifference', fontsize=22)
         ax_behav.set_xlim(time_extent)
-        ax_behav.grid(True, alpha=0.2)
+        ax_behav.spines['top'].set_visible(False)
+        ax_behav.spines['right'].set_visible(False)
+        ax_behav.tick_params(axis='x', labelsize=18, which='both')
+        ax_behav.tick_params(axis='y', labelsize=18, which='both')
     else:
         ax_behav.text(0.5, 0.5, 'Behavioral data not available', 
                     ha='center', va='center', transform=ax_behav.transAxes)
         ax_behav.set_xlim(time_extent)
+        ax_behav.set_ylabel('Pixel\nDifference', fontsize=14)
+        ax_behav.spines['top'].set_visible(False)
+        ax_behav.spines['right'].set_visible(False)
+        ax_behav.tick_params(axis='x', labelsize=12, which='both')
+        ax_behav.tick_params(axis='y', labelsize=12, which='both')
     
-    # ================ PLOT 2: CLUSTER ACTIVITY HEATMAP ================
+    # ================ PLOT 2: CLUSTER ACTIVITY HEATMAP (NO SLEEP INDICATORS) ================
     ax1 = fig.add_subplot(gs[1], sharex=ax_behav)
     
     # Get sorted normalized counts from np_results if available
@@ -1597,52 +1621,22 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         sorted_normalized_counts = None
         
     if sorted_normalized_counts is not None:
-        # Plot the heatmap
+        # Plot the heatmap (NO SLEEP INDICATORS)
         extent = [time_extent[0], time_extent[1], 0, sorted_normalized_counts.shape[0]]
         vmax_threshold = np.percentile(sorted_normalized_counts, 95)
         
         im1 = ax1.matshow(sorted_normalized_counts, aspect='auto', extent=extent, cmap='binary', 
                         interpolation='none', origin='lower', vmin=0, vmax=vmax_threshold)
         
-        # Instead of sleep overlays, color the x-axis during sleep periods
-        # Save the original x-axis color
-        orig_tick_color = ax1.xaxis.get_ticklabels()[0].get_color() if len(ax1.xaxis.get_ticklabels()) > 0 else 'black'
-        
-        # Set the ticks to blue where there is sleep
-        ax1.xaxis.set_tick_params(colors=orig_tick_color)  # Reset all to original
-        
-        # Create tick positions based on sleep bout boundaries
-        sleep_starts = []
-        sleep_ends = []
-        for _, bout in sleep_bouts.iterrows():
-            # Remove the in_range check to ensure all bouts are included
-            sleep_starts.append(bout['start_timestamp_s'])
-            sleep_ends.append(bout['end_bin_time'])
-
-                
-        # Add binary sleep/wake indicator at the top of the plot
-        # Calculate appropriate height for the indicator line (just above the top of the plot)
-        y_max = sorted_normalized_counts.shape[0]
-        y_indicator = y_max * 1.02  # Place slightly above the top
-        
-        # Draw a thin rectangle for each sleep bout at the top
-        for start, end in zip(sleep_starts, sleep_ends):
-            # Draw a blue line segment at the top for each sleep bout
-            ax1.plot([start, end], [y_indicator, y_indicator], color='blue', linewidth=4)
-        
-        # Add a thin black line across the entire width to serve as the "axis" for the indicator
-        ax1.axhline(y=y_indicator, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
-        
-        # Add small labels on the right side
-        ax1.text(time_extent[1]*1.01, y_indicator, 'Sleep', color='blue', 
-                verticalalignment='center', fontsize=8)
-        
-        ax1.set_title(f'All clusters sorted by sleep-wake modulation (n={sorted_normalized_counts.shape[0]})')
-        ax1.set_ylabel('Cluster rank\n(sleep-selective → wake-selective)')
-        # Note: removing colorbar for this plot to ensure consistent width
+        ax1.set_ylabel('Clusters', fontsize=22)
         ax1.set_xlim(time_extent)
+        
+        # Move X axis ticks to bottom
+        ax1.xaxis.tick_bottom()
+        ax1.tick_params(axis='x', labelsize=18, which='both')
+        ax1.tick_params(axis='y', labelsize=18, which='both')
     
-    # ================ PLOT 3: AVERAGE ACTIVITY ================
+    # ================ PLOT 3: AVERAGE ACTIVITY (NO SLEEP PERIODS) ================
     ax2 = fig.add_subplot(gs[2], sharex=ax_behav)
     
     # Get or calculate mean activity
@@ -1676,37 +1670,16 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         ax2.plot(time_bins, mean_activity, color='black', linewidth=1)
         ax2.set_ylim(y_min, y_max)
         
-        # Add light colored vertical spans for sleep periods
-        for _, bout in sleep_bouts.iterrows():
-            ax2.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
-            color='lightblue', alpha=0.3, ec='none')
-
-        ax2.grid(True, alpha=0.2)
-        ax2.set_title('Average activity across all filtered clusters')
-        ax2.set_ylabel('Mean spike count')
+        # Remove title, grid, and top/right spines
+        ax2.set_ylabel('Mean\nspike count', fontsize=22)
         ax2.set_xlim(time_extent)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.tick_params(axis='x', labelsize=18, which='both')
+        ax2.tick_params(axis='y', labelsize=18, which='both')
     
-    # ================ PLOT 4: PC1 over time ================
-
-    ax3 = fig.add_subplot(gs[3], sharex=ax_behav)
-    if pca_results is not None:
-        pc1_data = pca_results['pca_result'][:, 0]
-        time_bins_pca = pca_results['time_bins_used']
-        ax3.plot(time_bins_pca, pc1_data, color='black', linewidth=0.7)
-        ax3.set_title('PC1 over time (raw)')
-        ax3.set_ylabel('PC1 Score')
-        for _, bout in sleep_bouts.iterrows():
-            ax3.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
-            color='lightblue', alpha=0.3, ec='none')
-        ax3.grid(True, alpha=0.2)
-        ax3.legend()
-        ax3.set_xlim(time_extent)
-    else:
-        print("Warning: PCA results not available. Cannot plot PC1 over time.")
-
-
-    # ================ PLOT 5: POWER SPECTRUM ================
-    ax4 = fig.add_subplot(gs[4], sharex=ax_behav)
+    # ================ PLOT 4: POWER SPECTRUM ================
+    ax4 = fig.add_subplot(gs[3], sharex=ax_behav)
     
     # Get or calculate power spectrum
     if 'merged' in spectrum_results and 'power_spectrum' in spectrum_results['merged']:
@@ -1750,25 +1723,16 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
         im3 = ax4.matshow(Sxx_db_filtered, aspect='auto', origin='lower', 
                         extent=spec_extent, cmap='viridis',
                         vmin=vmin, vmax=vmax)
-
-        # Add sleep bout outlines as vertical lines
-        for _, bout in sleep_bouts.iterrows():
-            ax4.axvline(x=bout['start_timestamp_s'], color='white', linestyle='--', alpha=0.7)
-            ax4.axvline(x=bout['end_timestamp_s'], color='white', linestyle='--', alpha=0.7)
-
-        # Add horizontal lines for frequency bands
-        ax4.axhline(y=1, color='white', linestyle='-', alpha=0.5, label='Delta start (1Hz)')
-        ax4.axhline(y=4, color='white', linestyle='-', alpha=0.5, label='Delta end / Theta start (4Hz)')
-        ax4.axhline(y=8, color='white', linestyle='-', alpha=0.5, label='Theta end (8Hz)')
         
-        # Note: removing colorbar for this plot to ensure consistent width
-        ax4.set_title('Power Spectrum')
-        ax4.set_ylabel('Frequency (Hz)')
-        ax4.legend(loc='upper right', fontsize='small')
+        # Remove title and move X axis ticks to bottom
+        ax4.set_ylabel('Frequency (Hz)', fontsize=22)
         ax4.set_xlim(time_extent)  # Use the same time extent as other plots
+        ax4.xaxis.tick_bottom()
+        ax4.tick_params(axis='x', labelsize=18, which='both')
+        ax4.tick_params(axis='y', labelsize=18, which='both')
     
-    # ================ PLOT 6: FREQUENCY BAND POWER ================
-    ax5 = fig.add_subplot(gs[5], sharex=ax_behav)
+    # ================ PLOT 5: FREQUENCY BAND POWER (OPTIONAL SLEEP PERIODS) ================
+    ax5 = fig.add_subplot(gs[4], sharex=ax_behav)
 
     # Check if we have smoothed data available from the smoothed_results parameter
     band_powers = None
@@ -1814,23 +1778,31 @@ def combined_visualization(results, freq_results, np_results, spectrum_results,
             freq_time_bins = freq_results[reference_probe]['time_bins']
             spec_times = np.linspace(freq_time_bins[0], freq_time_bins[-1], len(next(iter(band_powers.values()))))
         
-        # Plot each band
+        # Plot each band in black
         for band_name, power in band_powers.items():
-            ax5.plot(spec_times, power, label=f"{band_name} {'(Smoothed)' if smoothed_available else ''}", linewidth=1.5)
+            ax5.plot(spec_times, power, color='black', linewidth=1.5)
         
-        # Add sleep bout highlights
-        for _, bout in sleep_bouts.iterrows():
-            ax5.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
-            color='lightblue', alpha=0.3, ec='none')
+        # Optionally add sleep periods as shaded regions
+        if show_sleep_in_delta:
+            y_limits = ax5.get_ylim()
+            for _, bout in sleep_bouts.iterrows():
+                ax5.axvspan(bout['start_timestamp_s'], bout['end_timestamp_s'], 
+                           alpha=0.2, color='lightblue')
+            ax5.set_ylim(y_limits)  # Restore original y-limits
         
-        title_suffix = " (Smoothed)" if smoothed_available else ""
-        ax5.set_title(f'Power in Frequency Bands Over Time{title_suffix}')
-        ax5.set_ylabel('Power (dB)')
-        ax5.set_xlabel('Time (s)')
+        # Remove title, grid, and top/right spines, format axes
+        ax5.set_ylabel('Power (dB)', fontsize=22)
+        ax5.set_xlabel('Time (s)', fontsize=26)
         ax5.legend(loc='upper right')
-        ax5.grid(True, alpha=0.3)
         ax5.set_xlim(time_extent)  # Use the same time extent as other plots
+        ax5.spines['top'].set_visible(False)
+        ax5.spines['right'].set_visible(False)
+        ax5.tick_params(axis='x', labelsize=18, which='both')
+        ax5.tick_params(axis='y', labelsize=18, which='both')
     
+        for label in ax5.get_xticklabels():
+            label.set_weight('bold')
+
     # Adjust layout to make better use of space now that colorbars are removed
     plt.subplots_adjust(hspace=0.4, left=0.06, right=0.98, top=0.96, bottom=0.05)
     
@@ -2478,6 +2450,7 @@ def combine_neural_data(results_dict, output_folder, subject, exp_date, exp_num,
     print(f"Saved combined matrix with shape {combined_matrix.shape} to {output_file}")
     return output_file
 
+
 def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df, 
                      subject, output_folder, n_components=3, components_to_plot=(0,1), 
                      downsample_factor=1, pc_index_to_plot=0):
@@ -2574,19 +2547,30 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     plt.savefig(variance_filename, dpi=300)
     plt.show()
     
-    # === PLOT 3: PC over Time ===
-    fig3, ax3 = plt.subplots(figsize=(14, 6))
+    # === PLOT 3: PC over Time (FIXED) ===
+    fig3, ax3 = plt.subplots(figsize=(14, 5))  # Made shorter in Y dimension
     ax3.plot(time_bins_used, pca_result[:, pc_index_to_plot], 'k-', linewidth=0.5)
     
     y_min_ts, y_max_ts = ax3.get_ylim() # Get y-limits for axvspan
     for _, row in neural_sleep_df.iterrows():
         ax3.axvspan(row['start_timestamp_s'], row['end_timestamp_s'], 
                    ymin=0, ymax=1, color='blue', alpha=0.2) # ymin/ymax relative to axes
-    ax3.set_title(f"PC{pc_index_to_plot +1} over Time")
-    ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel(f'PC{pc_index_to_plot +1} Score')    
+    
+    # Apply formatting changes
+    ax3.yaxis.set_major_locator(MaxNLocator(nbins=4))  # Only 4 y labels
+    ax3.set_xlabel('Time (s)', fontsize=26)
+    ax3.set_ylabel(f'PC{pc_index_to_plot +1} Score', fontsize=26)
+    ax3.tick_params(axis='x', labelsize=20)
+    ax3.tick_params(axis='y', labelsize=20)
+    ax3.spines['top'].set_visible(False)
+    ax3.spines['right'].set_visible(False)
+    ax3.set_xlim(left=0)
+    
+    # Fix the X label cutoff issue
+    plt.tight_layout()
+    
     timeseries_filename = os.path.join(output_folder, f"{subject}_pca_pc{pc_index_to_plot+1}_timeseries.png")
-    plt.savefig(timeseries_filename, dpi=300)
+    plt.savefig(timeseries_filename, dpi=300, bbox_inches='tight')
     plt.show()
     
     # === PLOT 4: Hexbin Plot ===
@@ -2610,7 +2594,7 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     plt.savefig(hexbin_filename, dpi=300)
     plt.show()
     
-    # === PLOT 5: State-Aware Density Plot ===
+    # === PLOT 5: State-Aware Density Plot (FIXED) ===
     fig5, ax5 = plt.subplots(figsize=(10, 8))
     
     # Create state-specific data
@@ -2624,12 +2608,12 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     
     # Plot wake density first (in orange/red)
     if len(pc1_wake) > 10:  # Need sufficient points for KDE
-        sns.kdeplot(x=pc1_wake, y=pc2_wake, ax=ax5, color='red', alpha=0.6, 
+        kde_wake = sns.kdeplot(x=pc1_wake, y=pc2_wake, ax=ax5, color='red', alpha=0.6, 
                    fill=True, levels=10, label='Wake Density')
     
     # Plot sleep density (in blue) - overlaying wake
     if len(pc1_sleep) > 10:  # Need sufficient points for KDE
-        sns.kdeplot(x=pc1_sleep, y=pc2_sleep, ax=ax5, color='blue', alpha=0.6, 
+        kde_sleep = sns.kdeplot(x=pc1_sleep, y=pc2_sleep, ax=ax5, color='blue', alpha=0.6, 
                    fill=True, levels=10, label='Sleep Density')
     
     # Fallback to scatter if not enough points for KDE
@@ -2638,16 +2622,67 @@ def analyze_neural_pca(combined_matrix, state_labels, time_bins, neural_sleep_df
     if len(pc1_sleep) <= 10:
         ax5.scatter(pc1_sleep, pc2_sleep, c='blue', alpha=0.5, s=10, label='Sleep')
     
-    ax5.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
-    ax5.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
-    ax5.set_title('PC1 vs PC2 State-Specific Density', fontsize=16, fontweight='bold')
+    # Get the actual plotted data limits from the axes (what's actually rendered)
+    # This will capture the extent of the KDE plots, not the raw data points
+    plotted_xlim = ax5.get_xlim()
+    plotted_ylim = ax5.get_ylim()
+    
+    # Calculate ranges from what's actually plotted
+    plotted_x_range = plotted_xlim[1] - plotted_xlim[0]
+    plotted_y_range = plotted_ylim[1] - plotted_ylim[0]
+    
+    # Set limits to 1.1 times the plotted range
+    x_center = (plotted_xlim[1] + plotted_xlim[0]) / 2
+    y_center = (plotted_ylim[1] + plotted_ylim[0]) / 2
+    
+    x_lim = [x_center - 0.55 * plotted_x_range, x_center + 0.55 * plotted_x_range]
+    y_lim = [y_center - 0.55 * plotted_y_range, y_center + 0.55 * plotted_y_range]
+    
+    ax5.set_xlim(x_lim)
+    ax5.set_ylim(y_lim)
+    
+    # Remove grid and center lines
+    ax5.grid(False)
+    
+    # Remove most of the axes, leaving only corner L-shape
+    ax5.spines['top'].set_visible(False)
+    ax5.spines['right'].set_visible(False)
+    ax5.spines['bottom'].set_visible(False)
+    ax5.spines['left'].set_visible(False)
+    
+    # Remove all ticks
+    ax5.set_xticks([])
+    ax5.set_yticks([])
+    
+    # Calculate axis lengths (1/6th of the visible plot range)
+    x_axis_length = (x_lim[1] - x_lim[0]) / 6
+    y_axis_length = (y_lim[1] - y_lim[0]) / 6
+    
+    # Draw custom L-shaped axes closer to the actual plot area
+    # Position them at about 10% from the edges instead of at the very edge
+    x_axis_pos = x_lim[0] + 0.1 * (x_lim[1] - x_lim[0])
+    y_axis_pos = y_lim[0] + 0.1 * (y_lim[1] - y_lim[0])
+    
+    # Horizontal line (X-axis)
+    ax5.plot([x_axis_pos, x_axis_pos + x_axis_length], [y_axis_pos, y_axis_pos], 
+             'k-', linewidth=2)
+    # Vertical line (Y-axis) 
+    ax5.plot([x_axis_pos, x_axis_pos], [y_axis_pos, y_axis_pos + y_axis_length], 
+             'k-', linewidth=2)
+    
+    # Add axis labels closer to the axes
+    ax5.text(x_axis_pos + x_axis_length/2, y_axis_pos - 0.03 * (y_lim[1] - y_lim[0]), 
+             f'PC{comp1_idx+1}', ha='center', va='top', fontsize=26, fontweight='bold')
+    ax5.text(x_axis_pos - 0.02 * (x_lim[1] - x_lim[0]), y_axis_pos + y_axis_length/2, 
+             f'PC{comp2_idx+1}', ha='right', va='center', fontsize=26, fontweight='bold', rotation=90)
+    
     ax5.legend(loc='upper right')
-    ax5.grid(True, alpha=0.3)
-    ax5.axhline(0, color='gray', linestyle='--', linewidth=0.7)
-    ax5.axvline(0, color='gray', linestyle='--', linewidth=0.7)
+    
+    # Add tight layout and proper bbox for saving
+    plt.tight_layout()
     
     density_filename = os.path.join(output_folder, f"{subject}_pca_pc{comp1_idx+1}_vs_pc{comp2_idx+1}_density.png")
-    plt.savefig(density_filename, dpi=300)
+    plt.savefig(density_filename, dpi=300, bbox_inches='tight')
     plt.show()
     
     # --- Integration of New Plots ---
@@ -5170,3 +5205,495 @@ def analyze_averaged_time_windows_in_pc_space(pca_results, dlc_folder, smoothed_
             'tortuosity': tortuosity
         }
     }
+
+def analyze_time_regions_in_pc_space_update(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
+                                            subject, output_folder, time_regions_to_analyze, 
+                                            movement_column='smoothed_difference', components_to_plot=(0, 1),
+                                            use_sg_filter=True, behavior='delta', plot_chrono=False):
+    """
+    Updated version of analyze_time_regions_in_pc_space with improved visualization.
+    Creates two separate figures:
+    - Figure 1: Movement and Delta power plots (similar to combined_visualization)
+    - Figure 2: Two PC space plots (behavioral coloring and chronological)
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca function
+    dlc_folder : str
+        Path to the DLC folder containing behavioral data
+    smoothed_results : dict
+        Results from power_band_smoothing containing delta power
+    neural_sleep_df : DataFrame
+        DataFrame with sleep bout information
+    subject : str
+        Subject identifier
+    output_folder : str
+        Directory to save plots
+    time_regions_to_analyze : list of dict
+        List of time regions to analyze, each dict should have:
+        {'name': 'Region1', 'start_time': start_s, 'end_time': end_s}
+        Use 'all' for start_time and end_time to plot entire recording
+        Use 0 or None for start_time and end_time to plot only movement/delta without PC coloring
+    movement_column : str
+        Column name for movement data
+    components_to_plot : tuple
+        Which PC components to use (default: (0, 1) for PC1 vs PC2)
+    use_sg_filter : bool
+        Whether to use Savitzky-Golay (True) or moving average (False) filtered delta power
+    behavior : str
+        Type of behavioral data to use for PC space coloring: 'movement' or 'delta'
+    plot_chrono : bool
+        Whether to plot the PC space with chronological coloring (default: False)
+        
+    Returns:
+    --------
+    dict : Analysis results including time region assignments and data
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as cm
+    from matplotlib.ticker import MaxNLocator
+    from scipy.interpolate import interp1d
+    
+    # Extract PC data
+    if 'pca_result' not in pca_results:
+        print("Error: PCA results not found")
+        return None
+    
+    pc_data = pca_results['pca_result']
+    time_bins_pca = pca_results['time_bins_used']
+    
+    comp1_idx, comp2_idx = components_to_plot
+    pc1 = pc_data[:, comp1_idx]
+    pc2 = pc_data[:, comp2_idx]
+    
+    print(f"PC{comp1_idx+1} vs PC{comp2_idx+1} analysis: {len(pc1)} time points")
+    print(f"Time range: {time_bins_pca[0]:.1f}s to {time_bins_pca[-1]:.1f}s")
+    print(f"Behavior type for PC coloring: {behavior}")
+    
+    # Load movement data
+    pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+    pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                       if f.endswith('.csv') and 'pixel_differences' in f]
+    
+    if not pixel_diff_files:
+        print(f"No pixel difference CSV found in {pixel_diff_path}")
+        return None
+    
+    pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+    try:
+        movement_data = pd.read_csv(pixel_diff_file)
+        movement_time = movement_data['time_sec'].values
+        movement_values = movement_data[movement_column].values
+        
+        # Remove NaN values
+        valid_mask = ~np.isnan(movement_values)
+        movement_time = movement_time[valid_mask]
+        movement_values = movement_values[valid_mask]
+        
+        print(f"Movement data loaded: {len(movement_values)} points")
+        
+    except Exception as e:
+        print(f"Error loading movement data: {e}")
+        return None
+    
+    # Load delta power data
+    band_powers = None
+    filter_type = None
+    
+    # Determine which filter was used
+    if output_folder:
+        sleep_times_csv = os.path.join(output_folder, "sleep_times.csv")
+        if os.path.exists(sleep_times_csv):
+            try:
+                sleep_df = pd.read_csv(sleep_times_csv)
+                if 'filter' in sleep_df.columns and len(sleep_df) > 0:
+                    filter_name = sleep_df['filter'].iloc[0]
+                    if 'Savitzky-Golay' in filter_name:
+                        filter_type = 'SG'
+                        if 'savitzky_golay' in smoothed_results:
+                            band_powers = smoothed_results['savitzky_golay']
+                    elif 'MovingAverage' in filter_name or 'Moving Average' in filter_name:
+                        filter_type = 'MA'
+                        if 'moving_average' in smoothed_results:
+                            band_powers = smoothed_results['moving_average']
+            except Exception as e:
+                print(f"Error determining filter type: {e}")
+    
+    # Fallback to user-specified filter if CSV method failed
+    if band_powers is None:
+        if use_sg_filter:
+            if 'savitzky_golay' in smoothed_results:
+                band_powers = smoothed_results['savitzky_golay']
+                filter_type = "SG"
+            else:
+                print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+                return None
+        else:
+            if 'moving_average' in smoothed_results:
+                band_powers = smoothed_results['moving_average']
+                filter_type = "MA"
+            else:
+                print("Error: Moving average filtered data not found in smoothed_results")
+                return None
+    
+    # Extract Delta band data
+    if 'Delta' not in band_powers:
+        print(f"Error: Delta band not found in {filter_type} filtered data")
+        return None
+    
+    delta_power = band_powers['Delta']
+    delta_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+    
+    print(f"Delta power data loaded: {len(delta_power)} points")
+    
+    # Get behavioral values at PC time points for coloring
+    movement_interp_func = interp1d(movement_time, movement_values, 
+                                   kind='linear', bounds_error=False, fill_value=np.nan)
+    movement_at_pc_times = movement_interp_func(time_bins_pca)
+    
+    delta_interp_func = interp1d(delta_time, delta_power, 
+                                kind='linear', bounds_error=False, fill_value=np.nan)
+    delta_at_pc_times = delta_interp_func(time_bins_pca)
+    
+    # Remove NaN values for coloring
+    valid_movement_mask = ~np.isnan(movement_at_pc_times)
+    valid_delta_mask = ~np.isnan(delta_at_pc_times)
+    valid_both_mask = valid_movement_mask & valid_delta_mask
+    
+    print(f"Valid movement data at PC times: {np.sum(valid_movement_mask)}/{len(movement_at_pc_times)}")
+    print(f"Valid delta data at PC times: {np.sum(valid_delta_mask)}/{len(delta_at_pc_times)}")
+    
+    # Store results for all time regions
+    all_time_region_results = {}
+    
+    for region_idx, time_region in enumerate(time_regions_to_analyze):
+        start_time = time_region['start_time']
+        end_time = time_region['end_time']
+        region_name = time_region['name']
+        
+        # Handle different cases
+        if (start_time == 0 or start_time is None) and (end_time == 0 or end_time is None):
+            start_time = time_bins_pca[0]
+            end_time = time_bins_pca[-1]
+            print(f"\nPlotting movement/delta only '{region_name}': {start_time:.1f}s to {end_time:.1f}s (PC plots greyed out)")
+            plot_entire_recording = False
+            plot_grey_only = True
+        elif start_time == 'all' and end_time == 'all':
+            start_time = time_bins_pca[0]
+            end_time = time_bins_pca[-1]
+            print(f"\nAnalyzing entire recording '{region_name}': {start_time:.1f}s to {end_time:.1f}s")
+            plot_entire_recording = True
+            plot_grey_only = False
+        else:
+            print(f"\nAnalyzing time region '{region_name}': {start_time}s to {end_time}s")
+            plot_entire_recording = False
+            plot_grey_only = False
+        
+        # Find time points within this time region
+        if plot_entire_recording:
+            time_mask = valid_both_mask
+        elif plot_grey_only:
+            time_mask = np.zeros(len(time_bins_pca), dtype=bool)  # No points selected for coloring
+        else:
+            time_mask = (time_bins_pca >= start_time) & (time_bins_pca <= end_time) & valid_both_mask
+        
+        if not plot_grey_only and np.sum(time_mask) == 0:
+            print(f"Warning: No valid points found in time region '{region_name}'")
+            continue
+        
+        # Get data for this time region
+        if plot_grey_only:
+            region_times = np.array([])
+            region_movement_values = np.array([])
+            region_delta_values = np.array([])
+            region_pc1 = np.array([])
+            region_pc2 = np.array([])
+        else:
+            region_times = time_bins_pca[time_mask]
+            region_movement_values = movement_at_pc_times[time_mask]
+            region_delta_values = delta_at_pc_times[time_mask]
+            region_pc1 = pc1[time_mask]
+            region_pc2 = pc2[time_mask]
+        
+        print(f"Time region '{region_name}': {len(region_times)} points for coloring")
+        
+        # Create normalization based on behavior parameter
+        if behavior == 'movement':
+            behavior_values_for_pc = movement_at_pc_times
+            behavior_mask_for_pc = valid_movement_mask
+            region_behavior_values = region_movement_values
+            behavior_norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
+                                     vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
+            pc_colormap = 'coolwarm'  # High movement = red, low movement = blue
+        else:  # behavior == 'delta'
+            behavior_values_for_pc = delta_at_pc_times
+            behavior_mask_for_pc = valid_delta_mask
+            region_behavior_values = region_delta_values
+            behavior_norm = Normalize(vmin=np.nanpercentile(delta_at_pc_times[valid_delta_mask], 5), 
+                                     vmax=np.nanpercentile(delta_at_pc_times[valid_delta_mask], 95))
+            pc_colormap = 'coolwarm_r'  # High delta/sleep = blue, low delta/wake = red
+        
+        # Create separate normalizations for movement and delta plots
+        movement_norm = Normalize(vmin=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 5), 
+                                 vmax=np.nanpercentile(movement_at_pc_times[valid_movement_mask], 95))
+        delta_norm = Normalize(vmin=np.nanpercentile(delta_at_pc_times[valid_delta_mask], 5), 
+                              vmax=np.nanpercentile(delta_at_pc_times[valid_delta_mask], 95))
+        
+        # Create time-based color map for chronological plot
+        if len(region_times) > 1:
+            time_norm = Normalize(vmin=region_times.min(), vmax=region_times.max())
+        else:
+            time_norm = Normalize(vmin=0, vmax=1)
+        time_cmap = cm.get_cmap('inferno')
+        
+        # === FIGURE 1: MOVEMENT AND DELTA PLOTS ===
+        fig1 = plt.figure(figsize=(16, 8))
+        gs1 = plt.GridSpec(2, 1, height_ratios=[1, 1])
+        
+        # Movement plot
+        ax1_mov = fig1.add_subplot(gs1[0])
+        
+        # Convert movement to thousands for better axis labels
+        movement_values_scaled = movement_values / 1000
+        region_movement_values_scaled = region_movement_values / 1000
+        
+        # Plot all movement data in black
+        ax1_mov.plot(movement_time, movement_values_scaled, 'k-', linewidth=0.8, alpha=0.7)
+        
+        # If time window is selected (not grey-only), plot colored points
+        if not plot_grey_only and not plot_entire_recording and len(region_times) > 0:
+            # Get movement values at region times
+            movement_at_region_times = movement_interp_func(region_times) / 1000
+            valid_interp = ~np.isnan(movement_at_region_times)
+            
+            if np.sum(valid_interp) > 0:
+                scatter1 = ax1_mov.scatter(region_times[valid_interp], movement_at_region_times[valid_interp], 
+                                         c=region_movement_values_scaled[valid_interp], cmap='coolwarm', 
+                                         s=30, alpha=0.9, norm=Normalize(vmin=movement_norm.vmin/1000, vmax=movement_norm.vmax/1000), 
+                                         zorder=5, edgecolors='black', linewidths=0.5)
+        
+        ax1_mov.set_ylabel('Pixel\nDifference', fontsize=22)
+        ax1_mov.set_xlim(movement_time[0], movement_time[-1])
+        ax1_mov.spines['top'].set_visible(False)
+        ax1_mov.spines['right'].set_visible(False)
+        ax1_mov.tick_params(axis='x', labelsize=18)
+        ax1_mov.tick_params(axis='y', labelsize=18)
+        ax1_mov.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax1_mov.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        
+        # Delta power plot  
+        ax1_delta = fig1.add_subplot(gs1[1], sharex=ax1_mov)
+        
+        # Plot all delta data in black
+        ax1_delta.plot(delta_time, delta_power, 'k-', linewidth=1.5)
+        
+        # If time window is selected (not grey-only), plot colored points
+        if not plot_grey_only and not plot_entire_recording and len(region_times) > 0:
+            # Get delta values at region times
+            delta_at_region_times = delta_interp_func(region_times)
+            valid_interp_delta = ~np.isnan(delta_at_region_times)
+            
+            if np.sum(valid_interp_delta) > 0:
+                scatter2 = ax1_delta.scatter(region_times[valid_interp_delta], delta_at_region_times[valid_interp_delta], 
+                                           c=region_delta_values[valid_interp_delta], cmap='coolwarm_r', 
+                                           s=30, alpha=0.9, norm=delta_norm, 
+                                           zorder=5, edgecolors='black', linewidths=0.5)
+        
+        ax1_delta.set_ylabel('Power (dB)', fontsize=22)
+        ax1_delta.set_xlabel('Time (s)', fontsize=26)
+        ax1_delta.set_xlim(delta_time[0], delta_time[-1])
+        ax1_delta.spines['top'].set_visible(False)
+        ax1_delta.spines['right'].set_visible(False)
+        ax1_delta.tick_params(axis='x', labelsize=18)
+        ax1_delta.tick_params(axis='y', labelsize=18)
+        ax1_delta.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax1_delta.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        
+        plt.tight_layout()
+        
+        # Save Figure 1
+        safe_region_name = region_name.replace(' ', '_').replace('/', '_')
+        plot_path1 = os.path.join(output_folder, f'{subject}_{safe_region_name}_movement_delta_{behavior}_PC{comp1_idx+1}_{comp2_idx+1}.png')
+        plt.savefig(plot_path1, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # === FIGURE 2: PC SPACE PLOTS ===
+        if plot_chrono:
+            fig2 = plt.figure(figsize=(16, 8))
+            gs2 = plt.GridSpec(1, 2, width_ratios=[1, 1])
+        else:
+            fig2 = plt.figure(figsize=(8, 8))
+            gs2 = plt.GridSpec(1, 1)
+        
+        # PC space with behavioral coloring
+        if plot_chrono:
+            ax2_pc_behavior = fig2.add_subplot(gs2[0])
+        else:
+            ax2_pc_behavior = fig2.add_subplot(gs2[0])
+        
+        if plot_grey_only:
+            # Plot all points in gray only
+            ax2_pc_behavior.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.5)
+        elif plot_entire_recording:
+            # Plot all points with behavioral coloring
+            if behavior == 'movement':
+                # Sort by movement intensity (low to high) so high movement points are plotted on top
+                valid_indices = np.where(behavior_mask_for_pc)[0]
+                movement_values_valid = behavior_values_for_pc[behavior_mask_for_pc]
+                sort_indices = np.argsort(movement_values_valid)  # Low to high
+                
+                scatter3 = ax2_pc_behavior.scatter(pc1[valid_indices[sort_indices]], pc2[valid_indices[sort_indices]], 
+                                                 c=movement_values_valid[sort_indices], cmap=pc_colormap, 
+                                                 s=15, alpha=0.7, norm=behavior_norm)
+            else:
+                # For delta, plot normally (no sorting needed)
+                scatter3 = ax2_pc_behavior.scatter(pc1[behavior_mask_for_pc], pc2[behavior_mask_for_pc], 
+                                                 c=behavior_values_for_pc[behavior_mask_for_pc], cmap=pc_colormap, 
+                                                 s=15, alpha=0.7, norm=behavior_norm)
+        else:
+            # Plot all points in gray first
+            ax2_pc_behavior.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3)
+            
+            # Plot the time region's points with behavioral coloring
+            if len(region_pc1) > 0:
+                scatter3 = ax2_pc_behavior.scatter(region_pc1, region_pc2, 
+                                                 c=region_behavior_values, cmap=pc_colormap, 
+                                                 s=25, alpha=0.8, norm=behavior_norm, 
+                                                 edgecolors='black', linewidths=0.3)
+        
+        ax2_pc_behavior.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+        ax2_pc_behavior.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+        ax2_pc_behavior.spines['top'].set_visible(False)
+        ax2_pc_behavior.spines['right'].set_visible(False)
+        ax2_pc_behavior.spines['bottom'].set_visible(True)
+        ax2_pc_behavior.spines['left'].set_visible(True)
+        # Remove 0,0 lines
+        ax2_pc_behavior.axhline(0, color='none')
+        ax2_pc_behavior.axvline(0, color='none')
+        ax2_pc_behavior.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax2_pc_behavior.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        
+        # PC space with chronological coloring (only if plot_chrono=True)
+        if plot_chrono:
+            ax2_pc_time = fig2.add_subplot(gs2[1])
+            
+            if plot_grey_only:
+                # Plot all points in gray only
+                ax2_pc_time.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.5)
+            elif plot_entire_recording:
+                # Plot all points with time coloring
+                if behavior == 'movement':
+                    # Sort by movement intensity (low to high) so high movement points are plotted on top
+                    valid_indices = np.where(behavior_mask_for_pc)[0]
+                    movement_values_valid = behavior_values_for_pc[behavior_mask_for_pc]
+                    sort_indices = np.argsort(movement_values_valid)  # Low to high
+                    
+                    scatter4 = ax2_pc_time.scatter(pc1[valid_indices[sort_indices]], pc2[valid_indices[sort_indices]], 
+                                                 c=time_bins_pca[valid_indices[sort_indices]], cmap='inferno', 
+                                                 s=15, alpha=0.7, 
+                                                 norm=Normalize(vmin=time_bins_pca[0], vmax=time_bins_pca[-1]))
+                else:
+                    # For delta, plot normally (no sorting needed)
+                    scatter4 = ax2_pc_time.scatter(pc1, pc2, 
+                                                 c=time_bins_pca, cmap='inferno', 
+                                                 s=15, alpha=0.7, 
+                                                 norm=Normalize(vmin=time_bins_pca[0], vmax=time_bins_pca[-1]))
+            else:
+                # Plot all points in gray first
+                ax2_pc_time.scatter(pc1, pc2, c='lightgray', s=10, alpha=0.3)
+                
+                # Plot the time region's points with time gradient colors
+                if len(region_pc1) > 0:
+                    scatter4 = ax2_pc_time.scatter(region_pc1, region_pc2, 
+                                                 c=region_times, cmap=time_cmap, 
+                                                 s=25, alpha=0.8, norm=time_norm,
+                                                 edgecolors='black', linewidths=0.3)
+                    
+                    # Add start/end markers
+                    if len(region_pc1) > 1:
+                        start_idx = np.argmin(region_times)
+                        end_idx = np.argmax(region_times)
+                        
+                        ax2_pc_time.plot(region_pc1[start_idx], region_pc2[start_idx], 'go', 
+                                       markersize=8, zorder=11)
+                        ax2_pc_time.plot(region_pc1[end_idx], region_pc2[end_idx], 'ro', 
+                                       markersize=8, zorder=11)
+            
+            ax2_pc_time.set_xlabel(f'PC{comp1_idx+1}', fontsize=14)
+            ax2_pc_time.set_ylabel(f'PC{comp2_idx+1}', fontsize=14)
+            ax2_pc_time.spines['top'].set_visible(False)
+            ax2_pc_time.spines['right'].set_visible(False)
+            ax2_pc_time.spines['bottom'].set_visible(True)
+            ax2_pc_time.spines['left'].set_visible(True)
+            # Remove 0,0 lines
+            ax2_pc_time.axhline(0, color='none')
+            ax2_pc_time.axvline(0, color='none')
+            ax2_pc_time.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            ax2_pc_time.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        
+        plt.tight_layout()
+        
+        # Save Figure 2
+        plot_path2 = os.path.join(output_folder, f'{subject}_{safe_region_name}_PC_space_{behavior}_PC{comp1_idx+1}_{comp2_idx+1}.png')
+        plt.savefig(plot_path2, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        print(f"Plots saved: {plot_path1} and {plot_path2}")
+        
+        # Store results for this time region
+        all_time_region_results[region_name] = {
+            'start_time': start_time,
+            'end_time': end_time,
+            'time_mask': time_mask,
+            'time_points': region_times,
+            'movement_values': region_movement_values,
+            'delta_values': region_delta_values,
+            'pc1_values': region_pc1,
+            'pc2_values': region_pc2,
+            'n_points': len(region_times),
+            'plot_entire_recording': plot_entire_recording,
+            'plot_grey_only': plot_grey_only,
+            'behavior_type': behavior
+        }
+        
+        # Print summary statistics for this time region
+        print(f"\n=== {region_name} Analysis Summary ===")
+        
+        if plot_grey_only:
+            print(f"  Movement/Delta plots only: {start_time:.1f}s - {end_time:.1f}s ({end_time - start_time:.1f}s duration)")
+            print(f"  PC plots: All points greyed out")
+        elif plot_entire_recording:
+            print(f"  Entire recording: {start_time:.1f}s - {end_time:.1f}s ({end_time - start_time:.1f}s duration)")
+        else:
+            # Check sleep/wake distribution
+            sleep_count = 0
+            wake_count = 0
+            
+            for time_point in region_times:
+                is_sleep = False
+                for _, row in neural_sleep_df.iterrows():
+                    if row['start_timestamp_s'] <= time_point <= row['end_timestamp_s']:
+                        is_sleep = True
+                        break
+                
+                if is_sleep:
+                    sleep_count += 1
+                else:
+                    wake_count += 1
+            
+            print(f"  Time window: {start_time}s - {end_time}s ({end_time - start_time}s duration)")
+            print(f"  Sleep points: {sleep_count} ({sleep_count/len(region_times)*100:.1f}%)")
+            print(f"  Wake points: {wake_count} ({wake_count/len(region_times)*100:.1f}%)")
+        
+        print(f"  Behavior type for PC coloring: {behavior}")
+        print(f"  Total points for coloring: {len(region_times)}")
+        if len(region_times) > 0:
+            print(f"  Movement range: {region_movement_values.min():.1f} - {region_movement_values.max():.1f} pixels")
+            print(f"  Delta power range: {region_delta_values.min():.2f} - {region_delta_values.max():.2f} dB")
+    
+    return all_time_region_results

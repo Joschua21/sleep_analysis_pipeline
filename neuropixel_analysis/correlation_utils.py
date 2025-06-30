@@ -6,6 +6,7 @@ from matplotlib import gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.colors import Normalize
+from matplotlib.ticker import MaxNLocator
 from pinkrigs_tools.dataset.query import load_data, queryCSV
 import os
 from datetime import datetime
@@ -157,15 +158,15 @@ def prepare_correlation_data_freq(freq_results):
     return combined_counts, neuron_info, time_bins, sleep_mask, wake_mask, sleep_periods
 
 
-
 def analyze_time_resolved_synchrony_matrix(combined_counts, time_bins, sleep_mask, wake_mask, sleep_periods,
                                           window_size_s=10, step_size_s=2, 
                                           bin_size_ms=100, output_dir=None):
     """
-    Fixed version with proper sleep period overlay
+    Fixed version with proper sleep period overlay and updated visualization
     """
     import numpy as np
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
     from tqdm import tqdm
     
     print(f"Input data: {combined_counts.shape[0]} neurons, {combined_counts.shape[1]} time bins")
@@ -233,33 +234,43 @@ def analyze_time_resolved_synchrony_matrix(combined_counts, time_bins, sleep_mas
     print(f"✅ Completed: {len(window_times)} windows processed")
     print(f"   Mean correlation range: {np.min(mean_correlations):.3f} to {np.max(mean_correlations):.3f}")
     
-    # Plot results
-    fig, ax = plt.subplots(figsize=(15, 6))
+    # === UPDATED VISUALIZATION (MATCHING PC PLOT STYLE) ===
+    fig, ax = plt.subplots(figsize=(14, 5))  # Made shorter in Y dimension like PC plot
     
-    # Plot correlation over time
-    ax.plot(window_times, mean_correlations, linewidth=2, color='black', alpha=0.8)
+    # Plot correlation over time with thinner line
+    ax.plot(window_times, mean_correlations, 'k-', linewidth=0.5)
     
-    # EFFICIENT: Add sleep periods directly (one axvspan per period)
+    # Add sleep periods with proper y-range handling
     if len(sleep_periods) > 0:
         print(f"Adding {len(sleep_periods)} sleep periods to plot...")
         
         for sleep_start, sleep_end in sleep_periods:
-            ax.axvspan(sleep_start, sleep_end, alpha=0.3, color='blue', linewidth=0)
+            ax.axvspan(sleep_start, sleep_end, 
+                      ymin=0, ymax=1, color='blue', alpha=0.2)  # ymin/ymax relative to axes
         
         print(f"Sleep periods plotted: {len(sleep_periods)} spans")
     else:
         print("Warning: No sleep periods provided")
     
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Mean Population Correlation')
-    ax.set_title(f'Population Synchrony Over Time')
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(time_bins[0], time_bins[-1])
+    # Apply formatting changes (matching PC plot style)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=4))  # Only 4 y labels
+    ax.set_xlabel('Time (s)', fontsize=26)
+    ax.set_ylabel('Mean Population\nCorrelation', fontsize=26)
+    ax.tick_params(axis='x', labelsize=20)
+    ax.tick_params(axis='y', labelsize=20)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.set_xlim(left=0)
     
-    
+    # Fix the X label cutoff issue
     plt.tight_layout()
+    
+    # Save with descriptive filename
     if output_dir:
-        plt.savefig(f"{output_dir}/population_synchrony_over_time.png", dpi=300, bbox_inches='tight')
+        synchrony_filename = f"{output_dir}/population_synchrony_over_time.png"
+        plt.savefig(synchrony_filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved: {synchrony_filename}")
+    
     plt.show()
     
     return {
@@ -2404,6 +2415,8 @@ def plot_peak_lag_stripe_map(population_corr_results, filter_hz=None, output_fol
         print(f"Split states: Yes - Each state sorted independently by its own center of mass")
     else:
         print(f"Split states: No - Combined data sorted by center of mass")
+
+
 def plot_sleep_vs_wake_correlation_scatter(state_corr_results, max_pairs=None, 
                                          save_plots=True, output_folder=None,
                                          color_by='density', figsize=(10, 8)):
@@ -2434,6 +2447,9 @@ def plot_sleep_vs_wake_correlation_scatter(state_corr_results, max_pairs=None,
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy.stats import gaussian_kde
+    from matplotlib.ticker import MaxNLocator
+    from matplotlib.colors import LogNorm
+    import os
     
     # Extract correlation matrices
     sleep_corr = state_corr_results['sleep_correlation_matrix']
@@ -2471,81 +2487,149 @@ def plot_sleep_vs_wake_correlation_scatter(state_corr_results, max_pairs=None,
     # Calculate difference (sleep - wake) for statistics
     correlation_difference = sleep_correlations_full - wake_correlations_full
     
-    # Create two plots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(figsize[0]*2, figsize[1]))
-    
-    # ======================== PLOT 1: Original Scatter Plot ========================
-    if color_by == 'density':
-        # Color by point density (useful for large datasets)
-        try:
-            # Calculate point density
-            xy = np.vstack([wake_correlations, sleep_correlations])
-            kde = gaussian_kde(xy)
-            density = kde(xy)
-            
-            scatter = ax1.scatter(wake_correlations, sleep_correlations, 
-                               c=density, cmap='viridis', alpha=0.6, s=1)
-            cbar1 = plt.colorbar(scatter, ax=ax1)
-            cbar1.set_label('Point Density', fontsize=12)
-        except:
-            # Fallback to simple coloring if density calculation fails
-            ax1.scatter(wake_correlations, sleep_correlations, 
-                      alpha=0.6, s=1, color='blue')
-            
-    elif color_by == 'magnitude':
-        # Color by average correlation magnitude
-        avg_magnitude = (np.abs(sleep_correlations) + np.abs(wake_correlations)) / 2
-        scatter = ax1.scatter(wake_correlations, sleep_correlations, 
-                           c=avg_magnitude, cmap='plasma', alpha=0.6, s=1)
-        cbar1 = plt.colorbar(scatter, ax=ax1)
-        cbar1.set_label('Average |Correlation|', fontsize=12)
-        
-    else:  # simple
-        ax1.scatter(wake_correlations, sleep_correlations, 
-                  alpha=0.6, s=1, color='blue')
-    
-    # Add diagonal line (x = y, where sleep = wake)
+    # Calculate axis limits and create nice tick values
     min_corr = min(np.min(wake_correlations_full), np.min(sleep_correlations_full))
     max_corr = max(np.max(wake_correlations_full), np.max(sleep_correlations_full))
+    
+    # Create nice, round tick values
+    # Round limits to nearest 0.1 and extend slightly
+    min_corr_rounded = np.floor(min_corr * 10) / 10
+    max_corr_rounded = np.ceil(max_corr * 10) / 10
+    
+    # Create exactly 4 nice tick values
+    tick_range = max_corr_rounded - min_corr_rounded
+    tick_step = tick_range / 3  # 3 intervals = 4 ticks
+    
+    # Round tick step to nearest nice value
+    if tick_step <= 0.2:
+        tick_step = 0.2
+    elif tick_step <= 0.3:
+        tick_step = 0.3
+    elif tick_step <= 0.4:
+        tick_step = 0.4
+    elif tick_step <= 0.5:
+        tick_step = 0.5
+    else:
+        tick_step = np.ceil(tick_step * 10) / 10
+    
+    # Generate nice tick values
+    nice_ticks = []
+    current_tick = min_corr_rounded
+    while current_tick <= max_corr_rounded:
+        nice_ticks.append(current_tick)
+        current_tick += tick_step
+    
+    # Ensure we have exactly 4 ticks, adjust if needed
+    if len(nice_ticks) > 4:
+        nice_ticks = nice_ticks[:4]
+    elif len(nice_ticks) < 4:
+        nice_ticks.append(nice_ticks[-1] + tick_step)
+    
+    nice_ticks = np.array(nice_ticks)
+    
+    # ======================== FIGURE 1: Scatter Plot (no colorbar) ========================
+    fig1, ax1 = plt.subplots(1, 1, figsize=figsize)
+    
+    if color_by == 'simple' or color_by == 'density':
+        # Use simple blue dots (no colorbar for first figure as requested)
+        ax1.scatter(wake_correlations, sleep_correlations, 
+                  alpha=0.6, s=1, color='blue')
+        
+    elif color_by == 'magnitude':
+        # Color by average correlation magnitude (but no colorbar)
+        avg_magnitude = (np.abs(sleep_correlations) + np.abs(wake_correlations)) / 2
+        ax1.scatter(wake_correlations, sleep_correlations, 
+                   c=avg_magnitude, cmap='plasma', alpha=0.6, s=1)
+    
+    # Add diagonal line (x = y, where sleep = wake)
     ax1.plot([min_corr, max_corr], [min_corr, max_corr], 
             'r--', alpha=0.7, linewidth=2, label='Sleep = Wake')
     
-    # Formatting for scatter plot
-    ax1.set_xlabel('Wake Correlation', fontsize=14)
-    ax1.set_ylabel('Sleep Correlation', fontsize=14)
-    ax1.set_title(f'Sleep vs Wake Correlations (Scatter)\n{len(sleep_correlations):,} pairs shown', 
-                fontsize=14)
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
+    # Clean formatting - no title, no grid, remove top and right spines
+    ax1.set_xlabel('Wake Correlation', fontsize=24)
+    ax1.set_ylabel('Sleep Correlation', fontsize=24)
+    ax1.tick_params(axis='both', which='major', labelsize=18)
+    
+    # Set nice tick values
+    ax1.set_xticks(nice_ticks)
+    ax1.set_yticks(nice_ticks)
+    
+    # Format tick labels to 1 decimal place
+    ax1.set_xticklabels([f'{x:.1f}' for x in nice_ticks])
+    ax1.set_yticklabels([f'{y:.1f}' for y in nice_ticks])
+    
+    # Remove top and right spines
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    
+    # Larger legend font
+    ax1.legend(fontsize=14)
     ax1.set_xlim(min_corr, max_corr)
     ax1.set_ylim(min_corr, max_corr)
     ax1.set_aspect('equal')
-      # ======================== PLOT 2: New Hexbin Density Plot ========================
-    # Create hexbin plot using the full dataset
-    # gridsize controls resolution (higher = more detail, but slower)
+    
+    plt.tight_layout()
+    
+    # Save first plot if requested
+    if save_plots and output_folder:
+        plot_filename1 = 'sleep_vs_wake_correlation_scatter.png'
+        plot_path1 = os.path.join(output_folder, plot_filename1)
+        plt.savefig(plot_path1, dpi=300, bbox_inches='tight')
+        print(f"Scatter plot saved: {plot_path1}")
+    
+    plt.show()
+    
+    # ======================== FIGURE 2: Hexbin Density Plot with Log Scale ========================
+    fig2, ax2 = plt.subplots(1, 1, figsize=figsize)
+    
+    # Create hexbin plot using the full dataset with logarithmic normalization
     gridsize = 50  # Adjust this for resolution vs performance
     
-    # Create hexbin plot - automatically handles density calculation
+    # Create hexbin plot with logarithmic color scaling
     hexbin = ax2.hexbin(wake_correlations_full, sleep_correlations_full, 
-                       gridsize=gridsize, cmap='viridis', mincnt=1,  # mincnt=1 makes empty hexbins white
-                       extent=[min_corr, max_corr, min_corr, max_corr])
+                       gridsize=gridsize, cmap='viridis', mincnt=1,
+                       extent=[min_corr, max_corr, min_corr, max_corr],
+                       norm=LogNorm(vmin=1, vmax=None))  # Log normalization starting from 1
     
     # Add colorbar for hexbin plot
     cbar2 = plt.colorbar(hexbin, ax=ax2)
-    cbar2.set_label('Number of Pairs', fontsize=12)
+    cbar2.set_label('Number of Pairs', fontsize=22)
+    cbar2.ax.tick_params(labelsize=18)
     
     # Add diagonal line
     ax2.plot([min_corr, max_corr], [min_corr, max_corr], 
             'r--', alpha=0.8, linewidth=2, label='Sleep = Wake')
     
-    # Formatting for density plot
-    ax2.set_xlabel('Wake Correlation', fontsize=14)
-    ax2.set_ylabel('Sleep Correlation', fontsize=14)
-    ax2.set_title(f'Sleep vs Wake Correlations (Density)\n{len(sleep_correlations_full):,} total pairs', 
-                fontsize=14)
-    ax2.legend()
+    # Clean formatting - no title, no grid, remove top and right spines
+    ax2.set_xlabel('Wake Correlation', fontsize=24)
+    ax2.set_ylabel('Sleep Correlation', fontsize=24)
+    ax2.tick_params(axis='both', which='major', labelsize=18)
+    
+    # Set nice tick values (same as scatter plot)
+    ax2.set_xticks(nice_ticks)
+    ax2.set_yticks(nice_ticks)
+    ax2.set_xticklabels([f'{x:.1f}' for x in nice_ticks])
+    ax2.set_yticklabels([f'{y:.1f}' for y in nice_ticks])
+    
+    # Remove top and right spines
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+    
+    # Larger legend font
+    ax2.legend(fontsize=18)
     ax2.set_xlim(min_corr, max_corr)
     ax2.set_ylim(min_corr, max_corr)
+    
+    plt.tight_layout()
+    
+    # Save second plot if requested
+    if save_plots and output_folder:
+        plot_filename2 = 'sleep_vs_wake_correlation_density.png'
+        plot_path2 = os.path.join(output_folder, plot_filename2)
+        plt.savefig(plot_path2, dpi=300, bbox_inches='tight')
+        print(f"Density plot saved: {plot_path2}")
+    
+    plt.show()
     
     # Calculate statistics
     sleep_wake_corr = np.corrcoef(sleep_correlations_full, wake_correlations_full)[0, 1]
@@ -2554,17 +2638,6 @@ def plot_sleep_vs_wake_correlation_scatter(state_corr_results, max_pairs=None,
     above_diagonal = np.sum(sleep_correlations_full > wake_correlations_full)  # Stronger in sleep
     below_diagonal = np.sum(sleep_correlations_full < wake_correlations_full)  # Stronger in wake
     on_diagonal = np.sum(sleep_correlations_full == wake_correlations_full)    # Equal
-    
-    plt.tight_layout()
-    
-    # Save plots if requested
-    if save_plots and output_folder:
-        plot_filename = 'sleep_vs_wake_correlation_scatter_and_density.png'
-        plot_path = os.path.join(output_folder, plot_filename)
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"Combined scatter and density plot saved: {plot_path}")
-    
-    plt.show()
     
     # Print summary statistics
     print(f"\n=== CORRELATION SCATTER ANALYSIS ===")
@@ -2616,11 +2689,10 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
     dict
         Dictionary containing stability scores and analysis results
     """
-    import numpy as np
     import matplotlib.pyplot as plt
-    import seaborn as sns
+    import numpy as np
     from scipy.stats import spearmanr, pearsonr
-    import os
+    from matplotlib.ticker import MaxNLocator
     
     # Extract correlation matrices
     sleep_corr = state_corr_results['sleep_correlation_matrix']
@@ -2634,51 +2706,34 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
     stability_scores = np.zeros(n_neurons)
     
     for neuron_i in range(n_neurons):
-        # Get correlation vectors for this neuron (excluding self-correlation)
-        sleep_vector = sleep_corr[neuron_i, :].copy()
-        wake_vector = wake_corr[neuron_i, :].copy()
+        # Get correlation vector for this neuron (exclude self-correlation)
+        sleep_vector = np.concatenate([sleep_corr[neuron_i, :neuron_i], 
+                                     sleep_corr[neuron_i, neuron_i+1:]])
+        wake_vector = np.concatenate([wake_corr[neuron_i, :neuron_i], 
+                                    wake_corr[neuron_i, neuron_i+1:]])
         
-        # Remove self-correlation (set to NaN)
-        sleep_vector[neuron_i] = np.nan
-        wake_vector[neuron_i] = np.nan
-        
-        # Remove NaN pairs
+        # Remove any NaN pairs
         valid_mask = ~(np.isnan(sleep_vector) | np.isnan(wake_vector))
-        sleep_clean = sleep_vector[valid_mask]
-        wake_clean = wake_vector[valid_mask]
-        if len(sleep_clean) == 0 or len(wake_clean) == 0:
-            print(f"Warning: Neuron {neuron_i} has no valid correlations (sleep: {len(sleep_clean)}, wake: {len(wake_clean)})")
-            continue  # Skip this neuron and move to the next one
         
-        # Calculate Spearman correlation between sleep and wake vectors
-        if len(sleep_clean) > 3:  # Need at least a few points for correlation
-            stability_score, _ = spearmanr(sleep_clean, wake_clean)
-            stability_scores[neuron_i] = stability_score if not np.isnan(stability_score) else 0
+        if np.sum(valid_mask) > 2:  # Need at least 3 valid pairs for correlation
+            stability_scores[neuron_i] = spearmanr(sleep_vector[valid_mask], 
+                                                 wake_vector[valid_mask])[0]
         else:
-            stability_scores[neuron_i] = 0
+            stability_scores[neuron_i] = np.nan
     
-    print(f"Stability scores range: {np.min(stability_scores):.3f} to {np.max(stability_scores):.3f}")
+    print(f"Stability scores range: {np.nanmin(stability_scores):.3f} to {np.nanmax(stability_scores):.3f}")
     
     # Select neurons for visualization
     if specific_neuron_ids is not None:
-        # Validate specific neuron IDs
-        valid_neurons = []
-        for neuron_id in specific_neuron_ids:
-            if 0 <= neuron_id < n_neurons:
-                valid_neurons.append(neuron_id)
-            else:
-                print(f"Warning: Neuron ID {neuron_id} is out of range (0-{n_neurons-1})")
-        
-        if len(valid_neurons) == 0:
-            print("Error: No valid neuron IDs provided")
-            return None
-            
-        neurons_to_plot = np.array(valid_neurons)
+        neurons_to_plot = specific_neuron_ids
         print(f"Plotting specific neurons: {neurons_to_plot}")
     else:
         # Select random neurons for visualization
-        neurons_to_plot = np.random.choice(n_neurons, size=min(n_random, n_neurons), replace=False)
-        print(f"Plotting {len(neurons_to_plot)} random neurons: {neurons_to_plot}")
+        valid_neurons = np.where(~np.isnan(stability_scores))[0]
+        neurons_to_plot = np.random.choice(valid_neurons, 
+                                         size=min(n_random, len(valid_neurons)), 
+                                         replace=False)
+        print(f"Plotting {len(neurons_to_plot)} random neurons")
     
     # Create two separate figures: 1) Individual plots, 2) Summary plots
     
@@ -2693,186 +2748,148 @@ def analyze_neuron_correlation_stability(state_corr_results, rrf_results, n_rand
     for i, neuron_idx in enumerate(neurons_to_plot):
         ax = plt.subplot(n_rows_individual, n_cols, i + 1)
         
-        # Get correlation vectors for this specific neuron (excluding self)
-        sleep_vector = sleep_corr[neuron_idx, :].copy()
-        wake_vector = wake_corr[neuron_idx, :].copy()
-        sleep_vector[neuron_idx] = np.nan
-        wake_vector[neuron_idx] = np.nan
+        # Get this neuron's correlation vectors
+        sleep_vector = np.concatenate([sleep_corr[neuron_idx, :neuron_idx], 
+                                     sleep_corr[neuron_idx, neuron_idx+1:]])
+        wake_vector = np.concatenate([wake_corr[neuron_idx, :neuron_idx], 
+                                    wake_corr[neuron_idx, neuron_idx+1:]])
         
-        # Remove NaN pairs
+        # Remove NaN pairs for plotting
         valid_mask = ~(np.isnan(sleep_vector) | np.isnan(wake_vector))
         sleep_clean = sleep_vector[valid_mask]
         wake_clean = wake_vector[valid_mask]
         
-        # Plot scatter: each point is this neuron's correlation with one partner
-        # X-axis: wake correlation with partner j
-        # Y-axis: sleep correlation with partner j
-        ax.scatter(wake_clean, sleep_clean, alpha=0.6, s=20, color='blue')
-        
-        # Add diagonal line
-        if len(sleep_clean) > 0 and len(wake_clean) > 0:
-            corr_min = min(np.min(sleep_clean), np.min(wake_clean))
-            corr_max = max(np.max(sleep_clean), np.max(wake_clean))
-            ax.plot([corr_min, corr_max], [corr_min, corr_max], 'k--', alpha=0.5, linewidth=1)
+        if len(sleep_clean) > 0:
+            # Scatter plot
+            ax.scatter(wake_clean, sleep_clean, alpha=0.6, s=8, color='blue')
             
-            # Set axis limits
-            ax.set_xlim(corr_min - 0.05, corr_max + 0.05)
-            ax.set_ylim(corr_min - 0.05, corr_max + 0.05)
-        else:
-            # Handle case where neuron has no valid correlations
-            ax.text(0.5, 0.5, f'Neuron {neuron_idx}:\nNo valid correlations', 
-                    ha='center', va='center', transform=ax.transAxes, 
-                    fontsize=10, color='red')
-            ax.set_xlim(-1, 1)
-            ax.set_ylim(-1, 1)
-        
-        ax.set_xlabel('Wake Correlation')
-        ax.set_ylabel('Sleep Correlation')
-        ax.set_title(f'Neuron {neuron_idx}')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim(corr_min, corr_max)
-        ax.set_ylim(corr_min, corr_max)
-        ax.set_aspect('equal')
+            # Add x=y line (more visible)
+            min_val = min(np.min(wake_clean), np.min(sleep_clean))
+            max_val = max(np.max(wake_clean), np.max(sleep_clean))
+            ax.plot([min_val, max_val], [min_val, max_val], 
+                   color='darkgray', linewidth=2, alpha=0.8, linestyle='--')  # More visible line
+            
+            # Set equal aspect and limits
+            ax.set_xlim(min_val, max_val)
+            ax.set_ylim(min_val, max_val)
+            ax.set_aspect('equal')
+            
+            # Limit ticks to 3 each
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+            
+            # Larger tick and axis label fonts
+            ax.tick_params(axis='both', which='major', labelsize=14)
+            ax.set_xlabel('Wake', fontsize=18)
+            ax.set_ylabel('Sleep', fontsize=18)
+            
+            # Remove grid, title, top and right spines
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
     
     # Add overall title with proper spacing
     fig1.suptitle('Correlation Preservation across States', 
                   fontsize=14, y=0.98)
     
     # Adjust spacing to prevent overlaps
-    plt.tight_layout(rect=[0, 0, 1, 0.94])  # Leave space for suptitle
+    plt.tight_layout(rect=[0, 0, 1, 0.94], w_pad=2.0, h_pad=5.0)  # Leave space for suptitle
     
     # Save individual plots if requested
     if output_folder:
-        plot_path1 = os.path.join(output_folder, 'individual_neuron_stability_plots.png')
-        plt.savefig(plot_path1, dpi=300, bbox_inches='tight')
-        print(f"Individual neuron plots saved: {plot_path1}")
+        individual_filename = f"{output_folder}/correlation_stability_individual_neurons.png"
+        plt.savefig(individual_filename, dpi=300, bbox_inches='tight')
+        print(f"Individual neuron plots saved: {individual_filename}")
     
     plt.show()
     
-    # FIGURE 2: Summary plots (Distribution + RRF correlation)
-    fig2, (ax_dist, ax_corr) = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Panel 1: Distribution of stability scores AND RRF scores (overlaid)
-    ax_dist.hist(stability_scores, bins=30, alpha=0.6, color='skyblue', edgecolor='black', 
-                label='Stability Scores')
-    ax_dist.hist(rrf_scores, bins=30, alpha=0.6, color='orange', edgecolor='black', 
-                label='RRF Scores')
-
-    # Add mean lines for both distributions
-    ax_dist.axvline(np.mean(stability_scores), color='blue', linestyle='--', alpha=0.8,
-                label=f'Stability Mean: {np.mean(stability_scores):.3f}')
-    ax_dist.axvline(np.mean(rrf_scores), color='red', linestyle='--', alpha=0.8,
-                label=f'RRF Mean: {np.mean(rrf_scores):.3f}')
-
-    ax_dist.set_xlabel('Score')
-    ax_dist.set_ylabel('Number of Neurons')
-    ax_dist.set_title('Distribution of Stability\nand RRF Scores')
-    ax_dist.legend()
-    ax_dist.grid(True, alpha=0.3)
-
-    # Panel 2: Stability vs RRF scores
-    # Calculate correlation between stability and RRF scores
-    stability_rrf_corr, stability_rrf_p = pearsonr(stability_scores, rrf_scores)
-    stability_rrf_spearman, stability_rrf_spearman_p = spearmanr(stability_scores, rrf_scores)
-
-    # Create scatter plot
-    ax_corr.scatter(stability_scores, rrf_scores, alpha=0.6, s=20, color='purple')
-
-    # Add trend line
-    z = np.polyfit(stability_scores, rrf_scores, 1)
-    p = np.poly1d(z)
-    x_trend = np.linspace(np.min(stability_scores), np.max(stability_scores), 100)
-    ax_corr.plot(x_trend, p(x_trend), 'r-', alpha=0.8, linewidth=2)
-
-    ax_corr.set_xlabel('Stability Score (Spearman r)')
-    ax_corr.set_ylabel('RRF Keeper Score')
-    ax_corr.set_title(f'Stability vs RRF Scores\nr={stability_rrf_corr:.3f}, p={stability_rrf_p:.1e}')
-    ax_corr.grid(True, alpha=0.3)
-
-    # Add correlation info as text
-    corr_text = f'Pearson: r={stability_rrf_corr:.3f}, p={stability_rrf_p:.1e}\n'
-    corr_text += f'Spearman: ρ={stability_rrf_spearman:.3f}, p={stability_rrf_spearman_p:.1e}'
-    ax_corr.text(0.05, 0.95, corr_text, transform=ax_corr.transAxes, fontsize=9,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
+    # FIGURE 2: Histogram of stability scores only
+    fig2, ax = plt.subplots(1, 1, figsize=(8, 6))
+    
+    # Remove NaN values for histogram
+    valid_stability = stability_scores[~np.isnan(stability_scores)]
+    
+    # Create histogram
+    ax.hist(valid_stability, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+    
+    # Set x-axis ticks every 0.2
+    x_ticks = np.arange(-1.0, 1.2, 0.2)  # From -1 to 1 every 0.2
+    ax.set_xticks(x_ticks)
+    
+    # Set y-axis ticks to multiples of 20
+    y_max = ax.get_ylim()[1]
+    y_ticks = np.arange(0, int(y_max) + 20, 20)
+    ax.set_yticks(y_ticks)
+    
+    # Larger fonts for ticks and axis labels
+    ax.tick_params(axis='both', which='major', labelsize=16)
+    ax.set_xlabel('Score', fontsize=20)
+    ax.set_ylabel('Count', fontsize=20)
+    
+    # Remove top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
     plt.tight_layout()
     
-    # Save summary plots if requested
+    # Save histogram if requested
     if output_folder:
-        plot_path2 = os.path.join(output_folder, 'correlation_stability_summary.png')
-        plt.savefig(plot_path2, dpi=300, bbox_inches='tight')
-        print(f"Summary plots saved: {plot_path2}")
+        hist_filename = f"{output_folder}/correlation_stability_histogram.png"
+        plt.savefig(hist_filename, dpi=300, bbox_inches='tight')
+        print(f"Stability histogram saved: {hist_filename}")
     
     plt.show()
     
     # Print detailed statistics
     print(f"\n=== CORRELATION STABILITY ANALYSIS ===")
     print(f"Neurons analyzed: {n_neurons}")
+    print(f"Valid stability scores: {len(valid_stability)}")
     print(f"Stability score statistics:")
-    print(f"  Mean: {np.mean(stability_scores):.3f}")
-    print(f"  Median: {np.median(stability_scores):.3f}")
-    print(f"  Std: {np.std(stability_scores):.3f}")
-    print(f"  Range: {np.min(stability_scores):.3f} to {np.max(stability_scores):.3f}")
-    
-    print(f"\nCorrelation with RRF keeper scores:")
-    print(f"  Pearson correlation: r = {stability_rrf_corr:.3f}, p = {stability_rrf_p:.1e}")
-    print(f"  Spearman correlation: ρ = {stability_rrf_spearman:.3f}, p = {stability_rrf_spearman_p:.1e}")
+    print(f"  Mean: {np.mean(valid_stability):.3f}")
+    print(f"  Median: {np.median(valid_stability):.3f}")
+    print(f"  Std: {np.std(valid_stability):.3f}")
+    print(f"  Range: {np.min(valid_stability):.3f} to {np.max(valid_stability):.3f}")
     
     # Identify most and least stable neurons
-    most_stable_idx = np.argmax(stability_scores)
-    least_stable_idx = np.argmin(stability_scores)
+    valid_indices = np.where(~np.isnan(stability_scores))[0]
+    most_stable_idx = valid_indices[np.argmax(stability_scores[valid_indices])]
+    least_stable_idx = valid_indices[np.argmin(stability_scores[valid_indices])]
     
     print(f"\nMost stable neuron:")
-    print(f"  Neuron {most_stable_idx}: Stability = {stability_scores[most_stable_idx]:.3f}, RRF = {rrf_scores[most_stable_idx]:.3f}")
+    print(f"  Neuron {most_stable_idx}: Stability = {stability_scores[most_stable_idx]:.3f}")
     
     print(f"\nLeast stable neuron:")
-    print(f"  Neuron {least_stable_idx}: Stability = {stability_scores[least_stable_idx]:.3f}, RRF = {rrf_scores[least_stable_idx]:.3f}")
+    print(f"  Neuron {least_stable_idx}: Stability = {stability_scores[least_stable_idx]:.3f}")
     
     # Count neurons with high stability (top quartile)
-    high_stability_threshold = np.percentile(stability_scores, 75)
-    high_stability_neurons = np.sum(stability_scores >= high_stability_threshold)
+    high_stability_threshold = np.percentile(valid_stability, 75)
+    high_stability_neurons = np.sum(valid_stability >= high_stability_threshold)
     
     print(f"\nNeurons with high stability (≥75th percentile, {high_stability_threshold:.3f}):")
-    print(f"  {high_stability_neurons} neurons ({high_stability_neurons/n_neurons*100:.1f}%)")
-    
-    # Compare with RRF classification
-    rrf_top_quartile = np.percentile(rrf_scores, 75)
-    rrf_high_neurons = np.sum(rrf_scores >= rrf_top_quartile)
-    
-    # Overlap between high stability and high RRF
-    high_both = np.sum((stability_scores >= high_stability_threshold) & 
-                      (rrf_scores >= rrf_top_quartile))
-    
-    print(f"\nOverlap between high stability and high RRF neurons:")
-    print(f"  {high_both} neurons are in both top quartiles ({high_both/min(high_stability_neurons, rrf_high_neurons)*100:.1f}% overlap)")
+    print(f"  {high_stability_neurons} neurons ({high_stability_neurons/len(valid_stability)*100:.1f}%)")
     
     # Print info about plotted neurons
     print(f"\nPlotted neurons and their stability scores:")
     for neuron_idx in neurons_to_plot:
-        print(f"  Neuron {neuron_idx}: Stability = {stability_scores[neuron_idx]:.3f}, RRF = {rrf_scores[neuron_idx]:.3f}")
+        if not np.isnan(stability_scores[neuron_idx]):
+            print(f"  Neuron {neuron_idx}: {stability_scores[neuron_idx]:.3f}")
+        else:
+            print(f"  Neuron {neuron_idx}: NaN (insufficient data)")
     
     return {
         'stability_scores': stability_scores,
-        'rrf_scores': rrf_scores,
-        'stability_rrf_correlation': stability_rrf_corr,
-        'stability_rrf_p_value': stability_rrf_p,
-        'stability_rrf_spearman': stability_rrf_spearman,
-        'stability_rrf_spearman_p': stability_rrf_spearman_p,
+        'valid_stability_scores': valid_stability,
         'most_stable_neuron': most_stable_idx,
         'least_stable_neuron': least_stable_idx,
         'high_stability_threshold': high_stability_threshold,
         'n_high_stability': high_stability_neurons,
-        'n_high_rrf': rrf_high_neurons,
-        'n_overlap_high': high_both,
         'plotted_neurons': neurons_to_plot
     }
-
 
 def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None, 
                                          save_plots=True, output_folder=None,
                                          color_by='density', figsize=(10, 8)):
     """
-    Create a scatter plot of sleep vs wake firing rates for all neurons.
+    Create separate scatter and density plots of sleep vs wake firing rates for all neurons.
     
     Parameters:
     -----------
@@ -2935,13 +2952,9 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
     # Calculate difference (sleep - wake) for statistics
     rate_difference = sleep_rates_full - wake_rates_full
     
-    # Create two plots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(figsize[0]*2, figsize[1]))
+    # ======================== FIGURE 1: Scatter Plot ========================
+    fig1, ax1 = plt.subplots(1, 1, figsize=figsize)
     
-    # Set shared title for both subplots
-    fig.suptitle('Firing Rate across States', fontsize=16, fontweight='bold')
-    
-    # ======================== PLOT 1: Scatter Plot ========================
     if color_by == 'density':
         # Color by point density (useful for large datasets)
         try:
@@ -2953,7 +2966,8 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
             scatter = ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
                                c=density, cmap='viridis', alpha=0.6, s=15)
             cbar1 = plt.colorbar(scatter, ax=ax1)
-            cbar1.set_label('Point Density', fontsize=12)
+            cbar1.set_label('Firing Rate (Hz)', fontsize=24)
+            cbar1.ax.tick_params(labelsize=20)
         except:
             # Fallback to simple coloring if density calculation fails
             ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
@@ -2964,31 +2978,51 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
         avg_rate = (sleep_rates_scatter + wake_rates_scatter) / 2
         scatter = ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
                            c=avg_rate, cmap='plasma', alpha=0.6, s=15)
-        cbar1 = plt.colorbar(scatter, ax=ax1)
-        cbar1.set_label('Average Firing Rate (Hz)', fontsize=12)
+        #cbar1 = plt.colorbar(scatter, ax=ax1)
+        #cbar1.set_label('Firing Rate (Hz)', fontsize=24)
+        #cbar1.ax.tick_params(labelsize=20)
         
     else:  # simple
         ax1.scatter(wake_rates_scatter, sleep_rates_scatter, 
                   alpha=0.6, s=15, color='blue')
     
-    # Add diagonal line (x = y, where sleep = wake)
+    # Add diagonal line (x = y, where sleep = wake) - changed to black
     min_rate = min(np.min(wake_rates_full), np.min(sleep_rates_full))
     max_rate = max(np.max(wake_rates_full), np.max(sleep_rates_full))
     ax1.plot([min_rate, max_rate], [min_rate, max_rate], 
-            'r--', alpha=0.7, linewidth=2, label='Sleep = Wake')
+            'k-', alpha=0.7, linewidth=2)  # Changed to black ('k-')
     
     # Formatting for scatter plot
-    ax1.set_xlabel('Firing Rate (Wake)', fontsize=14)
-    ax1.set_ylabel('Firing Rate (Sleep)', fontsize=14)
-    ax1.set_title(f'Scatter Plot', 
-                fontsize=14)
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
+    ax1.set_xlabel('Firing Rate (Wake)', fontsize=24)
+    ax1.set_ylabel('Firing Rate (Sleep)', fontsize=24)
+    ax1.tick_params(axis='x', labelsize=20)
+    ax1.tick_params(axis='y', labelsize=20)
+    
+    # Remove title, grid, and top/right spines
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    
     ax1.set_xlim(min(-1, min_rate), max_rate)
     ax1.set_ylim(min(-1, min_rate), max_rate)
     ax1.set_aspect('equal')
     
-    # ======================== PLOT 2: Hexbin Density Plot ========================
+    ax1.xaxis.set_major_locator(MaxNLocator(nbins=3)) 
+    ax1.yaxis.set_major_locator(MaxNLocator(nbins=3))
+
+    plt.tight_layout()
+    
+    # Save scatter plot if requested
+    if save_plots and output_folder:
+        plot_filename1 = 'sleep_vs_wake_firing_rate_scatter.png'
+        plot_path1 = os.path.join(output_folder, plot_filename1)
+        plt.savefig(plot_path1, dpi=300, bbox_inches='tight')
+        print(f"Firing rate scatter plot saved: {plot_path1}")
+    
+    plt.show()
+    
+    # ======================== FIGURE 2: Hexbin Density Plot ========================
+    fig2, ax2 = plt.subplots(1, 1, figsize=figsize)
+    
     # Create hexbin plot using the full dataset
     # gridsize controls resolution (higher = more detail, but slower)
     gridsize = 50  # Adjust this for resolution vs performance
@@ -3000,20 +3034,36 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
     
     # Add colorbar for hexbin plot
     cbar2 = plt.colorbar(hexbin, ax=ax2)
-    cbar2.set_label('Number of Neurons', fontsize=12)
+    cbar2.set_label('Number of Neurons', fontsize=24)
+    cbar2.ax.tick_params(labelsize=20)
     
-    # Add diagonal line
+    # Add diagonal line - changed to black
     ax2.plot([min_rate, max_rate], [min_rate, max_rate], 
-            'r--', alpha=0.8, linewidth=2, label='Sleep = Wake')
+            'k-', alpha=0.8, linewidth=2)  # Changed to black ('k-')
     
     # Formatting for density plot
-    ax2.set_xlabel('Firing Rate (Wake)', fontsize=14)
-    ax2.set_ylabel('Firing Rate (Sleep)', fontsize=14)
-    ax2.set_title(f'Density Plot', 
-                fontsize=14)
-    ax2.legend()
+    ax2.set_xlabel('Firing Rate (Wake)', fontsize=24)
+    ax2.set_ylabel('Firing Rate (Sleep)', fontsize=24)
+    ax2.tick_params(axis='x', labelsize=20)
+    ax2.tick_params(axis='y', labelsize=20)
+    
+    # Remove title, grid, and top/right spines
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+    
     ax2.set_xlim(min(-1, min_rate), max_rate)
     ax2.set_ylim(min(-1, min_rate), max_rate)
+    
+    plt.tight_layout()
+    
+    # Save density plot if requested
+    if save_plots and output_folder:
+        plot_filename2 = 'sleep_vs_wake_firing_rate_density.png'
+        plot_path2 = os.path.join(output_folder, plot_filename2)
+        plt.savefig(plot_path2, dpi=300, bbox_inches='tight')
+        print(f"Firing rate density plot saved: {plot_path2}")
+    
+    plt.show()
     
     # Calculate statistics
     sleep_wake_corr = np.corrcoef(sleep_rates_full, wake_rates_full)[0, 1]
@@ -3022,17 +3072,6 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
     above_diagonal = np.sum(sleep_rates_full > wake_rates_full)  # Higher in sleep
     below_diagonal = np.sum(sleep_rates_full < wake_rates_full)  # Higher in wake
     on_diagonal = np.sum(sleep_rates_full == wake_rates_full)    # Equal
-    
-    plt.tight_layout()
-    
-    # Save plots if requested
-    if save_plots and output_folder:
-        plot_filename = 'sleep_vs_wake_firing_rate_scatter_and_density.png'
-        plot_path = os.path.join(output_folder, plot_filename)
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"Combined firing rate scatter and density plot saved: {plot_path}")
-    
-    plt.show()
     
     # Print summary statistics
     print(f"\n=== FIRING RATE SCATTER ANALYSIS ===")
@@ -3056,3 +3095,195 @@ def plot_sleep_vs_wake_firing_rate_scatter(np_results, max_neurons=None,
         'mean_sleep_rate': np.mean(sleep_rates_full),
         'mean_wake_rate': np.mean(wake_rates_full)
     }
+
+
+def plot_stability_vs_firing_rate(stability_results, state_corr_results, results, 
+                                 output_folder=None, save_plots=True, figsize=(8, 6)):
+    """
+    Plot stability scores vs average firing rates for entire session, sleep only, and wake only.
+    
+    Parameters:
+    -----------
+    stability_results : dict
+        Results from analyze_neuron_correlation_stability containing stability scores
+    state_corr_results : dict
+        Results from analyze_state_specific_correlations 
+    results : dict
+        Results from process_spike_data containing neural activity data
+    output_folder : str, optional
+        Directory to save plots
+    save_plots : bool
+        Whether to save the plots
+    figsize : tuple
+        Figure size for each plot
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing firing rate data and correlation statistics
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy.stats import pearsonr, spearmanr
+    from matplotlib.ticker import MaxNLocator
+    import os
+    
+    # Extract stability scores
+    stability_scores = stability_results['stability_scores']
+    
+    # Remove NaN values from stability scores
+    valid_stability_mask = ~np.isnan(stability_scores)
+    valid_stability_scores = stability_scores[valid_stability_mask]
+    
+    print(f"Valid stability scores: {len(valid_stability_scores)} out of {len(stability_scores)}")
+    
+    # Collect and merge neural data from all probes
+    all_counts = []
+    all_time_bins = None
+    all_sleep_bouts = None
+    
+    # Check which probes have the required data
+    valid_probes = []
+    for probe in results:
+        if (probe in results and 
+            'counts' in results[probe] and 
+            'time_bins' in results[probe] and
+            'sleep_bout_mapping' in results[probe] and
+            'good_mua_cluster_mask' in results[probe]):
+            valid_probes.append(probe)
+    
+    if not valid_probes:
+        print("Error: No valid probes found with required data")
+        return None
+    
+    # Use the first probe's time bins and sleep bout info as reference
+    reference_probe = valid_probes[0]
+    all_time_bins = results[reference_probe]['time_bins']
+    all_sleep_bouts = results[reference_probe]['sleep_bout_mapping']
+    
+    # Find minimum length across probes
+    min_length = float('inf')
+    for probe in valid_probes:
+        probe_length = results[probe]['counts'].shape[1]
+        min_length = min(min_length, probe_length)
+    
+    # Collect data from each probe with quality filtering
+    for probe in valid_probes:
+        probe_counts = results[probe]['counts']
+        quality_mask = results[probe]['good_mua_cluster_mask']
+        
+        # Apply quality filter and truncate to minimum length
+        filtered_counts = probe_counts[quality_mask][:, :min_length]
+        all_counts.append(filtered_counts)
+    
+    # Merge counts from all probes
+    if not all_counts:
+        print("Error: No neural data found")
+        return None
+    
+    merged_counts = np.vstack(all_counts)
+    
+    # Truncate time bins and create sleep mask
+    time_bins = all_time_bins[:min_length]
+    
+    # Create sleep mask
+    sleep_mask = np.zeros(len(time_bins), dtype=bool)
+    for _, bout in all_sleep_bouts.iterrows():
+        start_idx = np.searchsorted(time_bins, bout['start_timestamp_s'])
+        end_idx = np.searchsorted(time_bins, bout['end_timestamp_s'])
+        if start_idx < len(time_bins) and end_idx <= len(time_bins):
+            sleep_mask[start_idx:end_idx] = True
+    
+    wake_mask = ~sleep_mask
+    
+    print(f"Neural data shape: {merged_counts.shape}")
+    print(f"Sleep bins: {np.sum(sleep_mask)}, Wake bins: {np.sum(wake_mask)}")
+    
+    # Apply validity mask to neural data
+    valid_merged_counts = merged_counts[valid_stability_mask]
+    
+    # Calculate firing rates
+    # 1. Entire session average firing rate (Hz)
+    bin_size_s = time_bins[1] - time_bins[0]  # Get bin size in seconds
+    total_firing_rates = np.mean(valid_merged_counts, axis=1) / bin_size_s
+    
+    # 2. Sleep-only average firing rate (Hz)
+    if np.sum(sleep_mask) > 0:
+        sleep_firing_rates = np.mean(valid_merged_counts[:, sleep_mask], axis=1) / bin_size_s
+    else:
+        sleep_firing_rates = np.zeros(len(valid_stability_scores))
+    
+    # 3. Wake-only average firing rate (Hz)
+    if np.sum(wake_mask) > 0:
+        wake_firing_rates = np.mean(valid_merged_counts[:, wake_mask], axis=1) / bin_size_s
+    else:
+        wake_firing_rates = np.zeros(len(valid_stability_scores))
+    
+    print(f"Firing rate ranges:")
+    print(f"  Total: {np.min(total_firing_rates):.3f} - {np.max(total_firing_rates):.3f} Hz")
+    print(f"  Sleep: {np.min(sleep_firing_rates):.3f} - {np.max(sleep_firing_rates):.3f} Hz") 
+    print(f"  Wake: {np.min(wake_firing_rates):.3f} - {np.max(wake_firing_rates):.3f} Hz")
+    
+    # Create the three plots
+    plot_data = [
+        (total_firing_rates, "Average Firing Rate", "total"),
+        (sleep_firing_rates, "Average Firing Rate (Sleep)", "sleep"), 
+        (wake_firing_rates, "Average Firing Rate (Wake)", "wake")
+    ]
+    
+    results_dict = {}
+    
+    for firing_rates, xlabel, condition in plot_data:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        
+        # Create scatter plot
+        ax.scatter(firing_rates, valid_stability_scores, alpha=0.6, s=20, color='blue')
+        
+        # Calculate correlations
+        pearson_r, pearson_p = pearsonr(firing_rates, valid_stability_scores)
+        spearman_r, spearman_p = spearmanr(firing_rates, valid_stability_scores)
+        
+        # Set axis labels with large font
+        ax.set_xlabel(xlabel, fontsize=24)
+        ax.set_ylabel('Stability', fontsize=24)
+        
+        # Set exactly 4 ticks on each axis
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        
+        # Large tick font size
+        ax.tick_params(axis='both', which='major', labelsize=18)
+        
+        # Remove top and right spines
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        plt.tight_layout()
+        
+        # Save plot if requested
+        if save_plots and output_folder:
+            plot_filename = f'stability_vs_firing_rate_{condition}.png'
+            plot_path = os.path.join(output_folder, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"Plot saved: {plot_path}")
+        
+        plt.show()
+        
+        # Store results
+        results_dict[condition] = {
+            'firing_rates': firing_rates,
+            'stability_scores': valid_stability_scores,
+            'pearson_correlation': pearson_r,
+            'pearson_p_value': pearson_p,
+            'spearman_correlation': spearman_r,
+            'spearman_p_value': spearman_p,
+            'n_neurons': len(valid_stability_scores)
+        }
+        
+        # Print correlation statistics
+        print(f"\n=== STABILITY vs FIRING RATE ({condition.upper()}) ===")
+        print(f"Neurons: {len(valid_stability_scores)}")
+        print(f"Pearson correlation: r = {pearson_r:.3f}, p = {pearson_p:.1e}")
+        print(f"Spearman correlation: ρ = {spearman_r:.3f}, p = {spearman_p:.1e}")
+    
+    return results_dict
