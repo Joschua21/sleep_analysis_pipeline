@@ -234,7 +234,7 @@ def analyze_time_resolved_synchrony_matrix(combined_counts, time_bins, sleep_mas
     print(f"✅ Completed: {len(window_times)} windows processed")
     print(f"   Mean correlation range: {np.min(mean_correlations):.3f} to {np.max(mean_correlations):.3f}")
     
-    # === UPDATED VISUALIZATION (MATCHING PC PLOT STYLE) ===
+    # === UPDATED VISUALIZATION ===
     fig, ax = plt.subplots(figsize=(14, 5))  # Made shorter in Y dimension like PC plot
     
     # Plot correlation over time with thinner line
