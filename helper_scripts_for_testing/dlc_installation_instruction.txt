@@ -1,0 +1,107 @@
+This guide was written for Windows 10, which fully supports CUDA v11.2. For Windows 11, use the Windows 10 installer. Hopefully, this works.
+Minimum GPU requirement: GeForce 10XX Series or higher. 
+This guide requires Miniconda (or Anaconda) installation to be completed before. It further requires admin rights. 
+
+The trained DLC model in this directory requires tensorflow 2.10. This dictates the installation of specific versions for DLC, CUDA etc. 
+For this, CUDA version 11.2 and cuDNN 8.1 is required. 
+    This might require to uninstall previously installed CUDA versions. By default, CUDA installation directory sits in C:\Program Files\NVIDIA GPU Computing Toolkit
+        --> uninstall the folder "CUDA" in this subdirectory to make sure only the correct CUDA version is installed. 
+Install CUDA 11.2 from https://developer.nvidia.com/cuda-11.2.0-download-archive
+Install cuDNN 8.1 for CUDA 11.2 (Windows x86 Version) from https://developer.nvidia.com/rdp/cudnn-archive
+unzip cuDNN files, copy all files from the folders "bin", "include", and "lib" to the respective CUDA directories
+    - Copy cuDNN/bin/* to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\bin\
+    - Copy cuDNN/include/* to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\include\
+    - Copy cuDNN/lib/* to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\lib\
+Go to "Advanced System Settings" --> "Advanced" --> "Environment Variables". Add CUDA_HOME to the system variables (directory path to \...\CUDA\v11.2) 
+Under System Variables, edit "Path" and include the path to "\...\CUDA\v11.2\bin" and "\...\CUDA\v11.2\libnvvp"
+Save all changes to Environment Variables. Now, restart the computer!
+
+Create a new environment using conda and python 3.8 (important for tf support) --> conda create -n DEEPLABCUT_ENV python=3.8
+conda activate DEEPLABCUT_ENV
+install tensorflow (gpu version!) using pip --> pip install tensorflow-gpu==2.10
+add libraries that can be problematic with version control during dlc installation 
+    pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 -f https://download.pytorch.org/whl/torch_stable.html
+        --> allows GPU support from torch 
+conda install -c conda-forge pytables=3.8.0
+Now, all should be good to install DLC, with the correct version for tf support:
+    pip install deeplabcut==2.3.9
+When using DLC in a notebook, add the environment as a kernel:
+    conda install -c conda-forge notebook ipykernel
+    python -m ipykernel install --user --name=DEEPLABCUT_ENV --display-name="Python (DLC)"
+
+You can test tensorflows access to the GPU using:
+    import tensorflow as tf
+
+    print("TensorFlow version:", tf.__version__)
+    print("Num GPUs Available:", len(tf.config.list_physical_devices('GPU')))
+    print("GPU Devices:", tf.config.list_physical_devices('GPU'))
+Which should return:
+    TensorFlow version: 2.10.0
+    Num GPUs Available: 1
+    GPU Devices: [PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
+if installation was successful and tensorflow can access your GPU. 
+
+Now, DLC should be able to run the pretrained model using:
+    import deeplabcut
+    # set config path and video_path like:
+    config_path = r"C:\...\...\config.yaml" # --> this is the config file in this folder. Make a local copy. 
+    video_path = r"C:\...\...\video.mp4"
+
+    deeplabcut.analyze_videos(
+    config_path,
+    [video_path],
+    shuffle=1,
+    trainingsetindex=0,
+    gputouse=0, 
+    save_as_csv=True,
+    robust_nframes=True
+)
+
+Additional Notes:
+
+If DLC crashes, make sure the file name is not too long! More than ~ 5 underscores in the file name can lead to DLC crashing!
+
+Running DLC requires MP4 files, and converting MJ2 to MP4 works easiest using ffmpeg. 
+Example function for this: 
+
+import os
+import subprocess as sp
+
+    def convert_video(ffmpeg_path, input_video_path, output_directory, convert_start_point=0, convert_duration=None):
+        
+        input_video_name = os.path.basename(input_video_path)
+        input_name_base = os.path.splitext(input_video_name)[0]
+
+        start_str = f"start{int(convert_start_point)}"
+        dur_str = f"dur{int(convert_duration)}" if convert_duration is not None else "full"
+        convert_video_name = f"{input_name_base}_convert.mp4"
+        convert_video_path = os.path.join(output_directory, convert_video_name)
+
+        ffmpeg_args = [
+            ffmpeg_path,
+            '-ss', str(convert_start_point),
+            '-i', input_video_path
+        ]
+
+        if convert_duration is not None:
+            ffmpeg_args += ['-t', str(convert_duration)]
+
+        ffmpeg_args += [
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '18',
+            '-y',
+            convert_video_path
+        ]
+
+        print("Running ffmpeg command:", ' '.join(ffmpeg_args))
+        sp.call(ffmpeg_args)
+
+        return convert_video_path, convert_video_name
+
+    if __name__ == "__main__":
+        ffmpeg_exec = 'ffmpeg'
+        mj2_file = r"\\zaru.cortexlab.net\Subjects\....\....\subject_topCam.mj2"
+        output_dir = r"C:\....\...\..."
+        os.makedirs(output_dir, exist_ok=True)
+        output_path, output_name = convert_video(ffmpeg_exec, mj2_file, output_dir, 0)

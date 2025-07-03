@@ -1,0 +1,22 @@
+Install CUDA version 11.2 and cuDNN 8.1 to get support for tensorflow 2.10
+Add cuDNN unzipped files from bin, include, and lib to respective CUDA directories
+Add CUDA_HOME to system variables and C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\bin and C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\libnvvp to Path
+
+conda create -n DEEPLABCUT_TF_2 python=3.8
+conda activate DEEPLABCUT_TF_2
+
+pip install tensorflow-gpu==2.10
+
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 -f https://download.pytorch.org/whl/torch_stable.html # --> need GPU supprot from torch
+
+conda install -c conda-forge pytables==3.8.0
+
+pip install deeplabcut==2.3.9
+
+pip install deeplabcut==2.3.9 "tensorpack>=0.11" "tf_slim>=1.1.0"
+
+conda install -c conda-forge notebook ipykernel
+
+python -m ipykernel install --user --name=DEEPLABCUT_TF_2 --display-name="Python (DLC_TF_2)"
+
+while ($true){ cls; nvidia-smi; Start-Sleep -Seconds 1 }
