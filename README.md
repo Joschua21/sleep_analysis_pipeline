@@ -56,3 +56,8 @@ Folder Structure etc.:
 Users/Experiment/Projects/video_conversions/subjects/AV049/Date_ExpNum/DLC
 Run Pixel Difference Pipeline --> video (name usually full.mj2) sits in DLC folder. Adjust in pixel diff notebook. 
 For rest of analysis, DLC folder is defined (adjust path in first cell if necessary). Will create neuropixel_analysis folder to store plots with saved_analysis subdirectory to save the analysis results. 
+
+
+Remaining analysis ideas etc.:
+- Re-run analysis on only "good" clusters, rejecting "mua"
+- Add slope of waking up and falling to the average delta plots
