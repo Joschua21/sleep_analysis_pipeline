@@ -51,3 +51,8 @@ Can be used to customize analysis, e.g., use: python sleep_analysis_pipeline.py 
 # Neuropixel Analysis Guidelines:
 
 MJ2 video file needs to sit in the base directory (subjid) in the subfolder "DLC". Then, adjust the exp Parameters at the top of the notebook and the code will run. Run the pixel_difference first!
+
+Folder Structure etc.:
+Users/Experiment/Projects/video_conversions/subjects/AV049/Date_ExpNum/DLC
+Run Pixel Difference Pipeline --> video (name usually full.mj2) sits in DLC folder. Adjust in pixel diff notebook. 
+For rest of analysis, DLC folder is defined (adjust path in first cell if necessary). Will create neuropixel_analysis folder to store plots with saved_analysis subdirectory to save the analysis results. 
