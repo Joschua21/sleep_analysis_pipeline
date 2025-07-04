@@ -5697,3 +5697,436 @@ def analyze_time_regions_in_pc_space_update(pca_results, dlc_folder, smoothed_re
             print(f"  Delta power range: {region_delta_values.min():.2f} - {region_delta_values.max():.2f} dB")
     
     return all_time_region_results
+
+
+
+def analyze_pc1_oscillation_peaks_troughs(pca_results, dlc_folder, smoothed_results, neural_sleep_df, 
+                                         subject, output_folder, 
+                                         movement_column='smoothed_difference', components_to_plot=(0, 1),
+                                         use_sg_filter=False, behavior='delta', 
+                                         smoothing_sigma=1.0, prominence=2.0, min_distance=2,
+                                         include_wake_data=True):
+    """
+    Analyze PC1 oscillations during sleep periods by detecting peaks and troughs.
+    
+    Parameters:
+    -----------
+    pca_results : dict
+        Results from analyze_neural_pca() containing PCA data
+    dlc_folder : str
+        Path to DLC analysis folder (for movement data if needed)
+    smoothed_results : dict
+        Results from power_band_smoothing() containing sleep period information
+    neural_sleep_df : pd.DataFrame
+        DataFrame containing neural sleep bout information
+    subject : str
+        Subject identifier
+    output_folder : str
+        Directory to save plots
+    movement_column : str
+        Column name for movement data (default: 'smoothed_difference')
+    components_to_plot : tuple
+        Which PC components to plot (default: (0, 1) for PC1 vs PC2)
+    use_sg_filter : bool
+        Whether to use Savitzky-Golay or moving average filter (default: False for MA)
+    behavior : str
+        Behavioral metric to use ('delta' or 'movement')
+    smoothing_sigma : float
+        Sigma for Gaussian smoothing of PC1 signal (default: 1.0)
+    prominence : float
+        Minimum prominence for peak/trough detection (default: 2.0)
+    min_distance : int
+        Minimum distance between peaks/troughs in samples (default: 2)
+    include_wake_data : bool
+        Whether to include wake data in plots 2 and 3 for context (default: True)
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing peak/trough analysis results
+    """
+    
+    import os
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from scipy.ndimage import gaussian_filter1d
+    from scipy.signal import find_peaks
+    from scipy.interpolate import interp1d
+    from matplotlib.ticker import MaxNLocator
+    import seaborn as sns
+    
+    # Extract PCA data
+    pca_transformed = pca_results['pca_result']
+    time_bins_pca = pca_results['time_bins_used']
+    
+    # Get the specified PC components
+    pc1_idx, pc2_idx = components_to_plot
+    pc1_data = pca_transformed[:, pc1_idx]
+    pc2_data = pca_transformed[:, pc2_idx]
+    
+    # Extract behavioral data from in-memory results (consistent with other functions)
+    behavior_data = None
+    behavior_time = None
+    behavior_values = None
+    
+    if behavior == 'delta':
+        # Extract delta power data from smoothed_results
+        band_powers = None
+        filter_type = None
+        
+        if use_sg_filter:
+            if smoothed_results and 'savitzky_golay' in smoothed_results:
+                band_powers = smoothed_results['savitzky_golay']
+                filter_type = "SG"
+            else:
+                print("Error: Savitzky-Golay filtered data not found in smoothed_results")
+                return None
+        else:
+            if smoothed_results and 'moving_average' in smoothed_results:
+                band_powers = smoothed_results['moving_average']
+                filter_type = "MA"
+            else:
+                print("Error: Moving average filtered data not found in smoothed_results")
+                return None
+        
+        # Extract Delta band data
+        if 'Delta' not in band_powers:
+            print(f"Error: Delta band not found in {filter_type} filtered data")
+            return None
+        
+        delta_power = band_powers['Delta']
+        behavior_time = np.linspace(time_bins_pca[0], time_bins_pca[-1], len(delta_power))
+        behavior_values = delta_power
+        
+        print(f"Delta power data loaded: {len(behavior_values)} points")
+        
+    else:  # behavior == 'movement'
+        # Load movement data from CSV (consistent with other functions that handle movement)
+        pixel_diff_path = os.path.join(dlc_folder, "pixel_difference")
+        
+        if not os.path.exists(pixel_diff_path):
+            print(f"Warning: Pixel difference folder not found at {pixel_diff_path}")
+            return None
+            
+        pixel_diff_files = [f for f in os.listdir(pixel_diff_path) 
+                           if f.endswith('.csv') and 'pixel_differences' in f]
+        
+        if not pixel_diff_files:
+            print(f"Warning: No pixel difference CSV found in {pixel_diff_path}")
+            return None
+        
+        pixel_diff_file = os.path.join(pixel_diff_path, pixel_diff_files[0])
+        try:
+            movement_data = pd.read_csv(pixel_diff_file)
+            behavior_time = movement_data['time_sec'].values
+            behavior_values = movement_data[movement_column].values
+            
+            # Remove NaN values
+            valid_mask = ~np.isnan(behavior_values)
+            behavior_time = behavior_time[valid_mask]
+            behavior_values = behavior_values[valid_mask]
+            
+            print(f"Movement data loaded: {len(behavior_values)} points")
+            
+        except Exception as e:
+            print(f"Error loading movement data: {e}")
+            return None
+    
+    # Create sleep mask
+    sleep_mask = np.zeros(len(time_bins_pca), dtype=bool)
+    for _, bout in neural_sleep_df.iterrows():
+        start_idx = np.searchsorted(time_bins_pca, bout['start_timestamp_s'])
+        end_idx = np.searchsorted(time_bins_pca, bout['end_timestamp_s'])
+        if start_idx < len(time_bins_pca) and end_idx <= len(time_bins_pca):
+            sleep_mask[start_idx:end_idx] = True
+    
+    print(f"Sleep periods: {np.sum(sleep_mask)} out of {len(sleep_mask)} time bins")
+    
+    if np.sum(sleep_mask) < 10:
+        print("Warning: Very few sleep periods found. Analysis may not be meaningful.")
+        return None
+    
+    # Extract PC1 data during sleep periods only
+    sleep_indices = np.where(sleep_mask)[0]
+    pc1_sleep = pc1_data[sleep_mask]
+    pc2_sleep = pc2_data[sleep_mask]
+    time_sleep = time_bins_pca[sleep_mask]
+    
+    # Extract wake data for context if requested
+    wake_mask = ~sleep_mask
+    pc1_wake = pc1_data[wake_mask]
+    pc2_wake = pc2_data[wake_mask]
+    
+    print(f"Analyzing {len(pc1_sleep)} sleep time points")
+    print(f"Wake time points available: {len(pc1_wake)}")
+    print(f"PC1 sleep range: {np.min(pc1_sleep):.2f} to {np.max(pc1_sleep):.2f}")
+    
+    # Apply Gaussian smoothing to reduce noise
+    pc1_smoothed = gaussian_filter1d(pc1_sleep, sigma=smoothing_sigma)
+    
+    # Find peaks and troughs
+    peaks, peak_properties = find_peaks(
+        pc1_smoothed, 
+        distance=min_distance, 
+        prominence=prominence
+    )
+    
+    troughs, trough_properties = find_peaks(
+        -pc1_smoothed, 
+        distance=min_distance, 
+        prominence=prominence
+    )
+    
+    print(f"Found {len(peaks)} peaks and {len(troughs)} troughs in PC1 sleep data")
+    
+    if len(peaks) == 0 and len(troughs) == 0:
+        print("Warning: No peaks or troughs found. Try reducing prominence threshold.")
+        return None
+    
+    # Create alternating peak-trough sequence
+    extrema = []
+    for p in peaks:
+        extrema.append((p, 'peak', pc1_smoothed[p]))
+    for t in troughs:
+        extrema.append((t, 'trough', pc1_smoothed[t]))
+    
+    # Sort by time
+    extrema.sort(key=lambda x: x[0])
+    
+    # Keep only alternating pattern
+    alternating_extrema = []
+    last_type = None
+    
+    for time_idx, ext_type, value in extrema:
+        if ext_type != last_type:
+            alternating_extrema.append((time_idx, ext_type, value))
+            last_type = ext_type
+    
+    print(f"After enforcing alternation: {len(alternating_extrema)} extrema")
+    
+    # Separate peaks and troughs
+    peak_indices = [x[0] for x in alternating_extrema if x[1] == 'peak']
+    trough_indices = [x[0] for x in alternating_extrema if x[1] == 'trough']
+    
+    print(f"Final count: {len(peak_indices)} peaks, {len(trough_indices)} troughs")
+    
+    # Calculate summary statistics
+    if len(peak_indices) > 1:
+        peak_intervals = np.diff(time_sleep[peak_indices])
+        mean_peak_interval = np.mean(peak_intervals)
+        std_peak_interval = np.std(peak_intervals)
+    else:
+        mean_peak_interval = np.nan
+        std_peak_interval = np.nan
+    
+    if len(trough_indices) > 1:
+        trough_intervals = np.diff(time_sleep[trough_indices])
+        mean_trough_interval = np.mean(trough_intervals)
+        std_trough_interval = np.std(trough_intervals)
+    else:
+        mean_trough_interval = np.nan
+        std_trough_interval = np.nan
+    
+    # PC space statistics
+    if len(peak_indices) > 0:
+        peak_pc1_mean = np.mean(pc1_sleep[peak_indices])
+        peak_pc1_std = np.std(pc1_sleep[peak_indices])
+        peak_pc2_mean = np.mean(pc2_sleep[peak_indices])
+        peak_pc2_std = np.std(pc2_sleep[peak_indices])
+    else:
+        peak_pc1_mean = peak_pc1_std = peak_pc2_mean = peak_pc2_std = np.nan
+    
+    if len(trough_indices) > 0:
+        trough_pc1_mean = np.mean(pc1_sleep[trough_indices])
+        trough_pc1_std = np.std(pc1_sleep[trough_indices])
+        trough_pc2_mean = np.mean(pc2_sleep[trough_indices])
+        trough_pc2_std = np.std(pc2_sleep[trough_indices])
+    else:
+        trough_pc1_mean = trough_pc1_std = trough_pc2_mean = trough_pc2_std = np.nan
+    
+    # Print summary statistics
+    print(f"\n=== PC1 OSCILLATION ANALYSIS SUMMARY ===")
+    print(f"Subject: {subject}")
+    print(f"Behavior: {behavior}")
+    print(f"Components: PC{pc1_idx+1} vs PC{pc2_idx+1}")
+    print(f"\nPARAMETERS:")
+    print(f"  Smoothing σ: {smoothing_sigma}")
+    print(f"  Prominence: {prominence}")
+    print(f"  Min Distance: {min_distance} samples")
+    print(f"\nDETECTION RESULTS:")
+    print(f"  Total sleep time points: {len(pc1_sleep)}")
+    print(f"  Peaks detected: {len(peak_indices)}")
+    print(f"  Troughs detected: {len(trough_indices)}")
+    print(f"  Total extrema: {len(alternating_extrema)}")
+    print(f"\nTEMPORAL STATISTICS:")
+    print(f"  Peak interval: {mean_peak_interval:.2f} ± {std_peak_interval:.2f} s")
+    print(f"  Trough interval: {mean_trough_interval:.2f} ± {std_trough_interval:.2f} s")
+    print(f"\nPC SPACE STATISTICS:")
+    print(f"  Peak PC{pc1_idx+1}: {peak_pc1_mean:.2f} ± {peak_pc1_std:.2f}")
+    print(f"  Peak PC{pc2_idx+1}: {peak_pc2_mean:.2f} ± {peak_pc2_std:.2f}")
+    print(f"  Trough PC{pc1_idx+1}: {trough_pc1_mean:.2f} ± {trough_pc1_std:.2f}")
+    print(f"  Trough PC{pc2_idx+1}: {trough_pc2_mean:.2f} ± {trough_pc2_std:.2f}")
+    
+    # Create three individual plots
+    
+    # Plot 1: PC1 over time with detected peaks and troughs
+    fig1, ax1 = plt.subplots(figsize=(12, 6))
+    
+    # Plot PC1 over time during sleep - UPDATED COLORS
+    ax1.plot(time_sleep, pc1_sleep, color='lightgray', alpha=0.5, linewidth=1, label='PC1 original')
+    ax1.plot(time_sleep, pc1_smoothed, color='darkgray', linewidth=2, label='PC1 smoothed')
+    
+    # Mark peaks and troughs
+    if len(peak_indices) > 0:
+        ax1.scatter(time_sleep[peak_indices], pc1_smoothed[peak_indices], 
+                   color='red', s=50, zorder=5, label=f'Peaks ({len(peak_indices)})')
+    
+    if len(trough_indices) > 0:
+        ax1.scatter(time_sleep[trough_indices], pc1_smoothed[trough_indices], 
+                   color='blue', s=50, zorder=5, label=f'Troughs ({len(trough_indices)})')
+    
+    ax1.set_xlabel('Time (s)', fontsize=14)
+    ax1.set_ylabel(f'PC{pc1_idx+1} Score', fontsize=14)
+    ax1.set_title(f'{subject}: PC{pc1_idx+1} Oscillations During Sleep\n(σ={smoothing_sigma}, prominence={prominence})', fontsize=14)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+        plot1_filename = f"{subject}_pc{pc1_idx+1}_oscillations_timeseries_{behavior}.png"
+        plot1_path = os.path.join(output_folder, plot1_filename)
+        plt.savefig(plot1_path, dpi=300, bbox_inches='tight')
+        print(f"Plot 1 saved to: {plot1_path}")
+    
+    plt.show()
+    
+    # Plot 2: PC space with peaks and troughs colored - SMALLER DOT SIZES
+    fig2, ax2 = plt.subplots(figsize=(10, 8))
+    
+    # Plot wake data first (underneath) if requested
+    if include_wake_data and len(pc1_wake) > 0:
+        ax2.scatter(pc1_wake, pc2_wake, c='orange', alpha=0.15, s=3, label=f'Wake points ({len(pc1_wake)})', zorder=1)
+    
+    # Plot all sleep points in light gray
+    ax2.scatter(pc1_sleep, pc2_sleep, c='lightgray', alpha=0.3, s=5, label='All sleep points', zorder=2)
+    
+    # Plot peaks and troughs with different colors - SMALLER SIZES
+    if len(peak_indices) > 0:
+        ax2.scatter(pc1_sleep[peak_indices], pc2_sleep[peak_indices], 
+                   c='red', s=30, alpha=0.8, label=f'Peaks ({len(peak_indices)})', 
+                   edgecolors='darkred', linewidth=1, zorder=5)
+    
+    if len(trough_indices) > 0:
+        ax2.scatter(pc1_sleep[trough_indices], pc2_sleep[trough_indices], 
+                   c='blue', s=30, alpha=0.8, label=f'Troughs ({len(trough_indices)})', 
+                   edgecolors='darkblue', linewidth=1, zorder=5)
+    
+    ax2.set_xlabel(f'PC{pc1_idx+1}', fontsize=14)
+    ax2.set_ylabel(f'PC{pc2_idx+1}', fontsize=14)
+    ax2.set_title(f'{subject}: PC{pc1_idx+1} vs PC{pc2_idx+1} Space\nPeaks and Troughs During Sleep', fontsize=14)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if output_folder:
+        plot2_filename = f"{subject}_pc{pc1_idx+1}_vs_pc{pc2_idx+1}_peaks_troughs_scatter_{behavior}.png"
+        plot2_path = os.path.join(output_folder, plot2_filename)
+        plt.savefig(plot2_path, dpi=300, bbox_inches='tight')
+        print(f"Plot 2 saved to: {plot2_path}")
+    
+    plt.show()
+    
+    # Plot 3: KDE density plot of peaks and troughs in PC space
+    fig3, ax3 = plt.subplots(figsize=(10, 8))
+    
+    # Prepare data for KDE
+    peak_pc1_vals = pc1_sleep[peak_indices] if len(peak_indices) > 0 else np.array([])
+    peak_pc2_vals = pc2_sleep[peak_indices] if len(peak_indices) > 0 else np.array([])
+    trough_pc1_vals = pc1_sleep[trough_indices] if len(trough_indices) > 0 else np.array([])
+    trough_pc2_vals = pc2_sleep[trough_indices] if len(trough_indices) > 0 else np.array([])
+    
+    # Plot KDE density for peaks and troughs (similar to analyze_neural_pca)
+    # First plot wake data for context if requested
+    if include_wake_data and len(pc1_wake) > 10:  # Need sufficient points for KDE
+        kde_wake = sns.kdeplot(x=pc1_wake, y=pc2_wake, ax=ax3, 
+                              color='orange', alpha=0.3, fill=True, levels=8, 
+                              label=f'Wake Density (n={len(pc1_wake)})')
+    elif include_wake_data and len(pc1_wake) > 0:
+        ax3.scatter(pc1_wake, pc2_wake, c='orange', alpha=0.2, s=5, 
+                   label=f'Wake (n={len(pc1_wake)})')
+    
+    # Then plot peaks and troughs on top
+    if len(peak_pc1_vals) > 5:  # Need sufficient points for KDE
+        kde_peaks = sns.kdeplot(x=peak_pc1_vals, y=peak_pc2_vals, ax=ax3, 
+                               color='red', alpha=0.6, fill=True, levels=10, 
+                               label=f'Peak Density (n={len(peak_indices)})')
+    elif len(peak_pc1_vals) > 0:
+        ax3.scatter(peak_pc1_vals, peak_pc2_vals, c='red', alpha=0.8, s=50, 
+                   label=f'Peaks (n={len(peak_indices)})', edgecolors='darkred')
+    
+    if len(trough_pc1_vals) > 5:  # Need sufficient points for KDE
+        kde_troughs = sns.kdeplot(x=trough_pc1_vals, y=trough_pc2_vals, ax=ax3, 
+                                 color='blue', alpha=0.6, fill=True, levels=10, 
+                                 label=f'Trough Density (n={len(trough_indices)})')
+    elif len(trough_pc1_vals) > 0:
+        ax3.scatter(trough_pc1_vals, trough_pc2_vals, c='blue', alpha=0.8, s=50, 
+                   label=f'Troughs (n={len(trough_indices)})', edgecolors='darkblue')
+    
+    
+    ax3.set_xlabel(f'PC{pc1_idx+1}', fontsize=14)
+    ax3.set_ylabel(f'PC{pc2_idx+1}', fontsize=14)
+    ax3.set_title(f'{subject}: PC{pc1_idx+1} vs PC{pc2_idx+1} Density\nPeaks and Troughs Distribution', fontsize=14)
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if output_folder:
+        plot3_filename = f"{subject}_pc{pc1_idx+1}_vs_pc{pc2_idx+1}_peaks_troughs_density_{behavior}.png"
+        plot3_path = os.path.join(output_folder, plot3_filename)
+        plt.savefig(plot3_path, dpi=300, bbox_inches='tight')
+        print(f"Plot 3 saved to: {plot3_path}")
+    
+    plt.show()
+    
+    # Return analysis results
+    return {
+        'peak_indices': peak_indices,
+        'trough_indices': trough_indices,
+        'peak_times': time_sleep[peak_indices] if len(peak_indices) > 0 else np.array([]),
+        'trough_times': time_sleep[trough_indices] if len(trough_indices) > 0 else np.array([]),
+        'peak_pc1_values': pc1_sleep[peak_indices] if len(peak_indices) > 0 else np.array([]),
+        'trough_pc1_values': pc1_sleep[trough_indices] if len(trough_indices) > 0 else np.array([]),
+        'peak_pc2_values': pc2_sleep[peak_indices] if len(peak_indices) > 0 else np.array([]),
+        'trough_pc2_values': pc2_sleep[trough_indices] if len(trough_indices) > 0 else np.array([]),
+        'alternating_extrema': alternating_extrema,
+        'pc1_smoothed': pc1_smoothed,
+        'sleep_time_points': time_sleep,
+        'sleep_pc1': pc1_sleep,
+        'sleep_pc2': pc2_sleep,
+        'parameters': {
+            'smoothing_sigma': smoothing_sigma,
+            'prominence': prominence,
+            'min_distance': min_distance,
+            'behavior': behavior,
+            'components_plotted': components_to_plot
+        },
+        'statistics': {
+            'mean_peak_interval': mean_peak_interval,
+            'std_peak_interval': std_peak_interval,
+            'mean_trough_interval': mean_trough_interval,
+            'std_trough_interval': std_trough_interval,
+            'peak_pc1_mean': peak_pc1_mean,
+            'peak_pc1_std': peak_pc1_std,
+            'peak_pc2_mean': peak_pc2_mean,
+            'peak_pc2_std': peak_pc2_std,
+            'trough_pc1_mean': trough_pc1_mean,
+            'trough_pc1_std': trough_pc1_std,
+            'trough_pc2_mean': trough_pc2_mean,
+            'trough_pc2_std': trough_pc2_std
+        }
+    }
